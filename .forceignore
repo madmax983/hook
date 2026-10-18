@@ -1,0 +1,5 @@
+# Files that a deploy and a retrieve do not use.
+package.xml
+**/jsconfig.json
+**/.eslintrc.json
+**/__tests__/**

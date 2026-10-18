@@ -1,0 +1,24 @@
+{
+  "packageDirectories": [
+    {
+      "path": "force-app",
+      "default": true
+    },
+    {
+      "path": "lib/revenant/lib/chunkedcursoriterator/force-app",
+      "default": false
+    },
+    {
+      "path": "lib/revenant/force-app",
+      "default": false
+    },
+    {
+      "path": "revenant-adapter",
+      "default": false
+    }
+  ],
+  "name": "hook",
+  "namespace": "",
+  "sfdxVersion": "2.0",
+  "sourceApiVersion": "67.0"
+}

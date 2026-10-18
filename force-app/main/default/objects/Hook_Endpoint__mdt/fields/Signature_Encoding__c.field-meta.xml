@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Signature_Encoding__c</fullName>
+    <label>Signature Encoding</label>
+    <description>HMAC_SHA256: hex (default) or base64.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <type>Text</type>
+    <length>10</length>
+    <required>false</required>
+</CustomField>

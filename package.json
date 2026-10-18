@@ -1,0 +1,20 @@
+{
+  "name": "hook",
+  "private": true,
+  "description": "Inbound and outbound webhooks for Salesforce, with an optional Revenant adapter.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node --test scripts/vectors/vectors.test.mjs scripts/api/api.test.mjs scripts/coverage/coverage.test.mjs scripts/metadata/metadata.test.mjs",
+    "test:vectors": "node --test scripts/vectors/vectors.test.mjs",
+    "test:api": "node --test scripts/api/api.test.mjs",
+    "vectors": "node scripts/vectors/generate.mjs",
+    "check:apex-compile": "node scripts/apex-ls/compile.mjs",
+    "format": "prettier --write --plugin=prettier-plugin-apex \"force-app/**/*.{cls,trigger}\" \"revenant-adapter/**/*.{cls,trigger}\"",
+    "format:check": "prettier --check --plugin=prettier-plugin-apex \"force-app/**/*.{cls,trigger}\" \"revenant-adapter/**/*.{cls,trigger}\"",
+    "check:apex-compile:core": "APEX_PACKAGES=force-app node scripts/apex-ls/compile.mjs"
+  },
+  "devDependencies": {
+    "prettier": "3.8.4",
+    "prettier-plugin-apex": "2.2.6"
+  }
+}

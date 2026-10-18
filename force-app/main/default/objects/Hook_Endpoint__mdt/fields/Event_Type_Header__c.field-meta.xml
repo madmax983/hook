@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Event_Type_Header__c</fullName>
+    <label>Event Type Header</label>
+    <description>A header with the event type, when the scheme gives none.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <type>Text</type>
+    <length>80</length>
+    <required>false</required>
+</CustomField>

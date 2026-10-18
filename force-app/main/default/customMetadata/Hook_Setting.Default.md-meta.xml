@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomMetadata xmlns="http://soap.sforce.com/2006/04/metadata" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+    <label>Default</label>
+    <protected>false</protected>
+    <values>
+        <field>Batch_Size__c</field>
+        <value xsi:type="xsd:double">10</value>
+    </values>
+    <values>
+        <field>Timeout_Ms__c</field>
+        <value xsi:type="xsd:double">10000</value>
+    </values>
+    <values>
+        <field>Max_Attempts__c</field>
+        <value xsi:type="xsd:double">10</value>
+    </values>
+    <values>
+        <field>Base_Delay_Seconds__c</field>
+        <value xsi:type="xsd:double">60</value>
+    </values>
+    <values>
+        <field>Max_Delay_Seconds__c</field>
+        <value xsi:type="xsd:double">21600</value>
+    </values>
+    <values>
+        <field>Disable_After_Failures__c</field>
+        <value xsi:type="xsd:double">50</value>
+    </values>
+    <values>
+        <field>Lease_Minutes__c</field>
+        <value xsi:type="xsd:double">10</value>
+    </values>
+    <values>
+        <field>Retention_Days__c</field>
+        <value xsi:type="xsd:double">30</value>
+    </values>
+</CustomMetadata>

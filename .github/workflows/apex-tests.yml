@@ -1,0 +1,91 @@
+# Apex tests on a one-off scratch org.
+# Deploys Hook, Revenant and the adapter. Runs the Hook test classes. Fails when the
+# coverage of the Hook classes is below APEX_MIN_COVERAGE.
+# Needs the DEVHUB_SFDX_AUTH_URL secret. Without it, the job skips with a warning.
+# It runs on a pull request with the label "run-org-tests", on push to main and on demand.
+name: Apex Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APEX_MIN_COVERAGE: "85"
+
+jobs:
+  gate:
+    name: Dev Hub secret
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'run-org-tests') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'run-org-tests'))
+    runs-on: ubuntu-latest
+    outputs:
+      devhub: ${{ steps.check.outputs.devhub }}
+    steps:
+      - id: check
+        env:
+          DEVHUB_SFDX_AUTH_URL: ${{ secrets.DEVHUB_SFDX_AUTH_URL }}
+        run: |
+          if [ -n "$DEVHUB_SFDX_AUTH_URL" ]; then
+            echo "devhub=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "devhub=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::DEVHUB_SFDX_AUTH_URL is not set. The Apex tests skip."
+          fi
+
+  apex:
+    name: Apex tests and coverage
+    needs: gate
+    if: needs.gate.outputs.devhub == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: apex-tests-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install the Salesforce CLI
+        run: npm install --global @salesforce/cli
+      - name: Log in to the Dev Hub
+        env:
+          DEVHUB_SFDX_AUTH_URL: ${{ secrets.DEVHUB_SFDX_AUTH_URL }}
+        run: |
+          auth_file="$RUNNER_TEMP/devhub.txt"
+          trap 'rm -f "$auth_file"' EXIT
+          printf '%s' "$DEVHUB_SFDX_AUTH_URL" > "$auth_file"
+          sf org login sfdx-url --sfdx-url-file "$auth_file" --alias devhub --set-default-dev-hub
+      - name: Make a scratch org
+        run: sf org create scratch --definition-file config/project-scratch-def.json --alias ci --set-default --duration-days 1 --wait 20
+      - name: Deploy
+        run: sf project deploy start --wait 60
+      - name: Assign the admin permission sets
+        run: sf org assign permset --name Hook_Admin --name Revenant_Admin
+      - name: Run the Hook tests
+        run: |
+          names=$(ls force-app/main/default/classes/*Test.cls revenant-adapter/main/default/classes/*Test.cls | xargs -n1 basename | sed 's/\.cls$//' | paste -sd, -)
+          sf apex run test --class-names "$names" --code-coverage --result-format json --wait 60 > apex-result.json || true
+          node -e "const r=require('./apex-result.json');const s=r.result.summary;console.log(s.outcome,s.passing+'/'+s.testsRan);for(const t of r.result.tests.filter(t=>t.Outcome!=='Pass'))console.log('::error::'+t.FullName+': '+t.Message);process.exit(s.outcome==='Passed'?0:1)"
+      - name: Check the coverage
+        run: node scripts/coverage/coverage.mjs apex-result.json "$APEX_MIN_COVERAGE"
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apex-result
+          path: apex-result.json
+          if-no-files-found: ignore
+      - name: Delete the scratch org
+        if: always()
+        run: sf org delete scratch --target-org ci --no-prompt || true

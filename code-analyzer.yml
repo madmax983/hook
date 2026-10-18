@@ -1,0 +1,5 @@
+ignores:
+  files:
+    - "**/node_modules/**"
+    - "lib/**"
+    - "scripts/apex-ls/.apex-ls/**"

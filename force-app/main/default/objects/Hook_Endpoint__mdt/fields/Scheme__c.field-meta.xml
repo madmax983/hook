@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Scheme__c</fullName>
+    <label>Scheme</label>
+    <description>STANDARD_WEBHOOKS, STRIPE, GITHUB, SLACK, SHOPIFY, HMAC_SHA256, TOKEN or NONE.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <type>Text</type>
+    <length>40</length>
+    <required>false</required>
+</CustomField>
