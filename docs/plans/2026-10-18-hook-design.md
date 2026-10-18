@@ -184,7 +184,7 @@ stateDiagram-v2
 - **AC-OUT-4** A 2xx sets `Delivered`. Each attempt records the status code, the error, and up to 2000 characters of the response.
 - **AC-OUT-5** The dispatcher claims rows with `FOR UPDATE`, a claim token, and a lease. An expired lease can be claimed again.
 - **AC-OUT-6** A non-2xx, a timeout, or a `CalloutException` sets `Retrying`. The next time uses exponential backoff with jitter and a cap. HTTP 429 and 503 use `Retry-After` when present.
-- **AC-OUT-7** After the maximum attempts (subscription value, else the org default 8) the row goes to `Failed`.
+- **AC-OUT-7** After the maximum attempts (subscription value, else the org default 10) the row goes to `Failed`.
 - **AC-OUT-8** HTTP 410 sets `Failed` and disables the subscription.
 - **AC-OUT-9** After `Disable_After_Failures__c` failed attempts in a row, the subscription is disabled. A 2xx sets the count to 0. The dispatcher does not claim rows of an inactive subscription.
 - **AC-OUT-10** One job sends at most `Batch_Size__c` rows (default 10) with `Timeout_Ms__c` (default 10,000). It chains a new job when more rows are due.
