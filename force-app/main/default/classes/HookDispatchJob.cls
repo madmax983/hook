@@ -2,7 +2,8 @@
  * @description Sends claimed deliveries (ADR 0002). With a token it sends the
  * rows of the token, writes the results, claims the next due rows and chains.
  * With no token it only claims and chains. It must see every row, so it runs
- * without sharing.
+ * without sharing. A HookDispatchFinalizer releases the rows when the job
+ * stops with an uncaught error.
  */
 public without sharing class HookDispatchJob implements Queueable, Database.AllowsCallouts {
   /** @description Longest retry delay that a delayed job covers. The sweep covers longer ones. */
@@ -26,6 +27,9 @@ public without sharing class HookDispatchJob implements Queueable, Database.Allo
   public void execute(QueueableContext ctx) {
     Boolean wasInJob = HookAsync.inJob;
     HookAsync.inJob = true;
+    if (token != null && System.isQueueable()) {
+      System.attachFinalizer(new HookDispatchFinalizer(token));
+    }
     try {
       if (token == null) {
         claimAndChain(null);

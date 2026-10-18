@@ -15,21 +15,12 @@ public without sharing class HookOutbound {
    * @throws HookException For a blank type, a large payload or a failed insert.
    */
   public static List<String> send(List<HookEvent> events) {
+    List<Prepared> prepared = new List<Prepared>();
     List<String> ids = new List<String>();
-    List<String> bodies = new List<String>();
     for (HookEvent e : events) {
-      if (e == null || String.isBlank(e.eventType)) {
-        throw new HookException('An event needs a type.');
-      }
-      String id = String.isBlank(e.eventId) ? newEventId() : e.eventId.trim();
-      String body = envelope(id, e.eventType.trim(), e.payload);
-      if (body.length() > MAX_PAYLOAD_CHARS) {
-        throw new HookException(
-          'The payload is larger than ' + MAX_PAYLOAD_CHARS + ' characters.'
-        );
-      }
-      ids.add(id);
-      bodies.add(body);
+      Prepared p = new Prepared(e);
+      prepared.add(p);
+      ids.add(p.id);
     }
     List<Hook_Subscription__c> subs = [
       SELECT Id, Event_Types__c, Channel__c
@@ -38,18 +29,23 @@ public without sharing class HookOutbound {
       WITH SYSTEM_MODE
     ];
     List<Hook_Delivery__c> rows = new List<Hook_Delivery__c>();
-    for (Integer i = 0; i < events.size(); i++) {
-      String type = events[i].eventType.trim();
+    for (Prepared p : prepared) {
       for (Hook_Subscription__c sub : subs) {
-        if (matches(sub.Event_Types__c, type)) {
-          rows.add(row(sub, ids[i], type, bodies[i]));
+        if (matches(sub.Event_Types__c, p.type)) {
+          rows.add(p.rowFor(sub));
         }
       }
     }
-    if (rows.isEmpty()) {
-      return ids;
-    }
+    dispatch(insertNew(rows));
+    return ids;
+  }
+
+  // Inserts the rows. A duplicate dedup key is skipped. Gives the new rows.
+  private static List<Hook_Delivery__c> insertNew(List<Hook_Delivery__c> rows) {
     List<Hook_Delivery__c> inserted = new List<Hook_Delivery__c>();
+    if (rows.isEmpty()) {
+      return inserted;
+    }
     Database.SaveResult[] results = Database.insert(
       rows,
       false,
@@ -65,8 +61,64 @@ public without sharing class HookOutbound {
         );
       }
     }
-    dispatch(inserted);
-    return ids;
+    return inserted;
+  }
+
+  /**
+   * @description One checked event with its Id and body.
+   */
+  private class Prepared {
+    public final String id;
+    public final String type;
+    public final String body;
+
+    /**
+     * @description Checks the event, and makes its Id and body.
+     * @param e The event.
+     */
+    public Prepared(HookEvent e) {
+      if (e == null || String.isBlank(e.eventType)) {
+        throw new HookException('An event needs a type.');
+      }
+      this.id = String.isBlank(e.eventId) ? newEventId() : e.eventId.trim();
+      this.type = e.eventType.trim();
+      this.body = envelope(id, type, e.payload);
+      if (body.length() > MAX_PAYLOAD_CHARS) {
+        throw new HookException(
+          'The payload is larger than ' + MAX_PAYLOAD_CHARS + ' characters.'
+        );
+      }
+    }
+
+    /**
+     * @description Makes the outbox row for one subscription.
+     * @param sub The subscription.
+     * @return The row.
+     */
+    public Hook_Delivery__c rowFor(Hook_Subscription__c sub) {
+      String dedup = sub.Id + ':' + id;
+      if (dedup.length() > MAX_KEY) {
+        dedup =
+          sub.Id +
+          ':' +
+          EncodingUtil.convertToHex(
+            Crypto.generateDigest('SHA-256', Blob.valueOf(id))
+          );
+      }
+      return new Hook_Delivery__c(
+        Subscription__c = sub.Id,
+        Event_Id__c = id.left(MAX_KEY),
+        Event_Type__c = type.left(MAX_KEY),
+        Dedup_Key__c = dedup,
+        Payload__c = body,
+        Status__c = 'Pending',
+        Attempts__c = 0,
+        Generation__c = 0,
+        Channel__c = String.isBlank(sub.Channel__c)
+          ? HookConfig.defaultChannel()
+          : sub.Channel__c.trim()
+      );
+    }
   }
 
   /**
@@ -123,6 +175,23 @@ public without sharing class HookOutbound {
    * @param rows The rows. Each has Channel__c.
    */
   public static void dispatch(List<Hook_Delivery__c> rows) {
+    Map<String, List<Id>> byChannel = groupByChannel(rows);
+    List<Hook_Delivery__c> failed = new List<Hook_Delivery__c>();
+    for (String name : byChannel.keySet()) {
+      try {
+        channel(name).dispatch(byChannel.get(name));
+      } catch (HookException e) {
+        failed.addAll(failedRows(byChannel.get(name), e.getMessage()));
+      }
+    }
+    if (!failed.isEmpty()) {
+      update as system failed;
+    }
+  }
+
+  private static Map<String, List<Id>> groupByChannel(
+    List<Hook_Delivery__c> rows
+  ) {
     Map<String, List<Id>> byChannel = new Map<String, List<Id>>();
     for (Hook_Delivery__c d : rows) {
       String name = String.isBlank(d.Channel__c)
@@ -133,62 +202,29 @@ public without sharing class HookOutbound {
       }
       byChannel.get(name).add(d.Id);
     }
-    List<Hook_Delivery__c> failed = new List<Hook_Delivery__c>();
-    for (String name : byChannel.keySet()) {
-      HookChannel channel;
-      try {
-        Object made = HookTypes.make(name, 'HookChannel');
-        if (!(made instanceof HookChannel)) {
-          throw HookTypes.wrongType(name, 'HookChannel');
-        }
-        channel = (HookChannel) made;
-      } catch (HookException e) {
-        for (Id id : byChannel.get(name)) {
-          failed.add(
-            new Hook_Delivery__c(
-              Id = id,
-              Status__c = 'Failed',
-              Last_Error__c = e.getMessage()
-            )
-          );
-        }
-        continue;
-      }
-      channel.dispatch(byChannel.get(name));
-    }
-    if (!failed.isEmpty()) {
-      update as system failed;
-    }
+    return byChannel;
   }
 
-  private static Hook_Delivery__c row(
-    Hook_Subscription__c sub,
-    String eventId,
-    String type,
-    String body
-  ) {
-    String dedup = sub.Id + ':' + eventId;
-    if (dedup.length() > MAX_KEY) {
-      dedup =
-        sub.Id +
-        ':' +
-        EncodingUtil.convertToHex(
-          Crypto.generateDigest('SHA-256', Blob.valueOf(eventId))
-        );
+  private static List<Hook_Delivery__c> failedRows(List<Id> ids, String error) {
+    List<Hook_Delivery__c> rows = new List<Hook_Delivery__c>();
+    for (Id id : ids) {
+      rows.add(
+        new Hook_Delivery__c(
+          Id = id,
+          Status__c = 'Failed',
+          Last_Error__c = error
+        )
+      );
     }
-    return new Hook_Delivery__c(
-      Subscription__c = sub.Id,
-      Event_Id__c = eventId.left(MAX_KEY),
-      Event_Type__c = type.left(MAX_KEY),
-      Dedup_Key__c = dedup,
-      Payload__c = body,
-      Status__c = 'Pending',
-      Attempts__c = 0,
-      Generation__c = 0,
-      Channel__c = String.isBlank(sub.Channel__c)
-        ? HookConfig.defaultChannel()
-        : sub.Channel__c.trim()
-    );
+    return rows;
+  }
+
+  private static HookChannel channel(String name) {
+    Object made = HookTypes.make(name, 'HookChannel');
+    if (!(made instanceof HookChannel)) {
+      throw HookTypes.wrongType(name, 'HookChannel');
+    }
+    return (HookChannel) made;
   }
 
   private static String newEventId() {

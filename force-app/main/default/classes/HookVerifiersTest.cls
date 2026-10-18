@@ -4,6 +4,7 @@
  */
 @IsTest
 private class HookVerifiersTest {
+  @SuppressWarnings('PMD.ExcessiveParameterList')
   private static HookVerification run(
     Hook_Endpoint__mdt ep,
     String body,

@@ -26,12 +26,18 @@ public without sharing class HookInbound {
       return handle(request);
     } catch (Exception e) {
       Database.rollback(sp);
-      System.debug(
-        LoggingLevel.ERROR,
-        'Hook inbound error: ' + e.getMessage() + '\n' + e.getStackTraceString()
-      );
+      log(e);
       return error(500, 'internal error');
     }
+  }
+
+  // Writes the error to the debug log. The caller gets no detail.
+  @SuppressWarnings('PMD.AvoidDebugStatements')
+  private static void log(Exception e) {
+    System.debug(
+      LoggingLevel.ERROR,
+      'Hook inbound error: ' + e.getMessage() + '\n' + e.getStackTraceString()
+    );
   }
 
   private static HookResponse handle(HookRequest request) {
@@ -39,23 +45,19 @@ public without sharing class HookInbound {
     if (ep == null || ep.Active__c != true) {
       return error(404, 'unknown endpoint');
     }
-    if (request.bodyBlob.size() > MAX_BODY_CHARS * 4) {
-      return error(413, 'body too large');
-    }
-    if (!request.decodeBody()) {
-      return error(400, 'body is not UTF-8');
-    }
-    if (request.body.length() > MAX_BODY_CHARS) {
-      return error(413, 'body too large');
+    HookResponse bad = bodyProblem(request);
+    if (bad != null) {
+      return bad;
     }
     List<String> secrets = HookSecrets.valuesFor(ep.Secret_Names__c);
     HookVerifier verifier = HookVerifiers.forEndpoint(ep);
-    Object handler = String.isBlank(ep.Handler_Class__c)
-      ? null
-      : HookTypes.make(ep.Handler_Class__c, 'HookInboundHandler');
-
+    Object handler = handlerOrNull(ep);
     if (request.method == 'GET') {
-      HookResponse answer = handshake(verifier, handler, request, secrets);
+      HookResponse answer = handshake(
+        new List<Object>{ verifier, handler },
+        request,
+        secrets
+      );
       return answer != null ? answer : error(405, 'method not allowed');
     }
     HookVerification verification = verifier.verify(request, secrets);
@@ -65,20 +67,45 @@ public without sharing class HookInbound {
         verification == null ? 'not verified' : verification.reason
       );
     }
-    HookResponse answer = handshake(verifier, handler, request, secrets);
-    if (answer != null) {
-      return answer;
+    HookResponse answer = handshake(
+      new List<Object>{ verifier, handler },
+      request,
+      secrets
+    );
+    return answer != null ? answer : store(ep, request, verification);
+  }
+
+  // Gives 413 or 400 for a body that Hook cannot store, else null.
+  private static HookResponse bodyProblem(HookRequest request) {
+    if (request.bodyBlob.size() > MAX_BODY_CHARS * 4) {
+      return error(413, 'body too large');
     }
-    return store(ep, request, verification);
+    if (!request.decodeBody()) {
+      return error(400, 'body is not UTF-8');
+    }
+    return request.body.length() > MAX_BODY_CHARS
+      ? error(413, 'body too large')
+      : null;
+  }
+
+  // The handler, only to find a handshake. A bad handler class does not stop
+  // the store: the dispatcher fails the row with the error.
+  private static Object handlerOrNull(Hook_Endpoint__mdt ep) {
+    try {
+      return String.isBlank(ep.Handler_Class__c)
+        ? null
+        : HookTypes.make(ep.Handler_Class__c, 'HookInboundHandler');
+    } catch (HookException e) {
+      return null;
+    }
   }
 
   private static HookResponse handshake(
-    Object verifier,
-    Object handler,
+    List<Object> candidates,
     HookRequest request,
     List<String> secrets
   ) {
-    for (Object candidate : new List<Object>{ verifier, handler }) {
+    for (Object candidate : candidates) {
       if (candidate instanceof HookHandshake) {
         HookResponse answer = ((HookHandshake) candidate)
           .respond(request, secrets);

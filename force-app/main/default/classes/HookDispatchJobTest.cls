@@ -183,9 +183,9 @@ private class HookDispatchJobTest {
   }
 
   @IsTest
-  static void failuresInARowDisableAndASuccessResets() {
+  static void failuresInARowDisable() {
     HookTestSupport.settings().Disable_After_Failures__c = 2;
-    Hook_Delivery__c d = claimed();
+    claimed();
     sub.Consecutive_Failures__c = 1;
     update sub;
     Test.setMock(
@@ -249,7 +249,7 @@ private class HookDispatchJobTest {
   @IsTest
   static void aRotatedSecretSignsWithBoth() {
     HookTestSupport.settings();
-    Hook_Delivery__c d = claimed();
+    claimed();
     Hook.rotateSecret('sub_s', 24);
     Test.setMock(
       HttpCalloutMock.class,
@@ -337,6 +337,7 @@ private class HookDispatchJobTest {
       )
       .keySet();
     Assert.areEqual(new Set<Id>{ pending.Id, due.Id, expired.Id }, got);
+    Assert.isFalse(got.contains(inactive.Id), 'inactive subscription');
     Assert.isNull(HookQueueChannel.claim(null, 50), 'nothing left to claim');
   }
 
@@ -411,5 +412,95 @@ private class HookDispatchJobTest {
     Assert.areEqual('Delivered', after.Status__c);
     Assert.areEqual(1, after.Attempts__c);
     Assert.areEqual(1, after.Generation__c);
+  }
+
+  @IsTest
+  static void aFailedJobReleasesItsRows() {
+    HookTestSupport.settings().Max_Attempts__c = 2;
+    Hook_Delivery__c retry = claimed();
+    Hook_Delivery__c last = HookTestSupport.delivery(sub, 'In_Flight');
+    last.Claim_Token__c = 'tok';
+    last.Attempts__c = 1;
+    Hook_Delivery__c other = HookTestSupport.delivery(sub, 'In_Flight');
+    other.Claim_Token__c = 'other';
+    update new List<Hook_Delivery__c>{ last, other };
+
+    Test.startTest();
+    new HookDispatchFinalizer('tok').execute(new FailedContext());
+    Test.stopTest();
+
+    Hook_Delivery__c afterRetry = HookTestSupport.reload(retry.Id);
+    Assert.areEqual('Retrying', afterRetry.Status__c);
+    Assert.areEqual(1, afterRetry.Attempts__c);
+    Assert.isNull(afterRetry.Claim_Token__c);
+    Assert.isNotNull(afterRetry.Next_Attempt_At__c);
+    Assert.isTrue(
+      afterRetry.Last_Error__c.contains('Apex CPU time limit'),
+      afterRetry.Last_Error__c
+    );
+    Assert.areEqual('Failed', HookTestSupport.reload(last.Id).Status__c);
+    Assert.areEqual(
+      'other',
+      HookTestSupport.reload(other.Id).Claim_Token__c,
+      'other jobs keep their rows'
+    );
+  }
+
+  @IsTest
+  static void aSuccessfulJobLeavesItsRows() {
+    HookTestSupport.settings();
+    Hook_Delivery__c d = claimed();
+    new HookDispatchFinalizer('tok').execute(new FailedContext().succeeded());
+    Assert.areEqual('In_Flight', HookTestSupport.reload(d.Id).Status__c);
+  }
+
+  /**
+   * @description A finalizer context for a failed or a good job.
+   */
+  private class FailedContext implements FinalizerContext {
+    private ParentJobResult result = ParentJobResult.UNHANDLED_EXCEPTION;
+
+    /**
+     * @description Makes the job good.
+     * @return This context.
+     */
+    public FailedContext succeeded() {
+      result = ParentJobResult.SUCCESS;
+      return this;
+    }
+
+    /**
+     * @description Gives no job Id.
+     * @return Null.
+     */
+    public Id getAsyncApexJobId() {
+      return null;
+    }
+
+    /**
+     * @description Gives the error of a failed job.
+     * @return The error, or null.
+     */
+    public Exception getException() {
+      return result == ParentJobResult.SUCCESS
+        ? null
+        : new HookException('Apex CPU time limit exceeded');
+    }
+
+    /**
+     * @description Gives a request Id.
+     * @return The Id.
+     */
+    public String getRequestId() {
+      return 'req';
+    }
+
+    /**
+     * @description Gives the job result.
+     * @return The result.
+     */
+    public ParentJobResult getResult() {
+      return result;
+    }
   }
 }

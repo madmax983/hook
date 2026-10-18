@@ -47,6 +47,7 @@ public inherited sharing class HookSigner {
    * @param body The body.
    * @return The signature, "v1," and base64.
    */
+  @SuppressWarnings('PMD.ExcessiveParameterList')
   public static String standardSignature(
     String secret,
     String id,
@@ -69,6 +70,7 @@ public inherited sharing class HookSigner {
    * @param body The body bytes.
    * @return The signature, "v1," and base64.
    */
+  @SuppressWarnings('PMD.ExcessiveParameterList')
   public static String standardSignature(
     String secret,
     String id,
@@ -87,6 +89,7 @@ public inherited sharing class HookSigner {
    * @param body The body.
    * @return The signatures, separated by spaces.
    */
+  @SuppressWarnings('PMD.ExcessiveParameterList')
   public static String signatureHeader(
     List<String> secrets,
     String id,

@@ -151,10 +151,18 @@ private class HookActionsTest {
     }
   }
 
+  /**
+   * @description Keeps the Flow name and inputs.
+   */
   private class RecordingLauncher implements HookFlowHandler.Launcher {
     public String flowName;
     public Map<String, Object> inputs;
 
+    /**
+     * @description Keeps the values.
+     * @param flowName The Flow name.
+     * @param inputs The inputs.
+     */
     public void start(String flowName, Map<String, Object> inputs) {
       this.flowName = flowName;
       this.inputs = inputs;

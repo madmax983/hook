@@ -26,6 +26,7 @@ global inherited sharing class HookRequest {
    * @param params The query parameters.
    * @param remoteAddress The caller IP address.
    */
+  @SuppressWarnings('PMD.ExcessiveParameterList')
   public HookRequest(
     String method,
     String endpoint,

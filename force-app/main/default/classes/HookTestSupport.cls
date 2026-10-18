@@ -6,6 +6,15 @@ public class HookTestSupport {
   /** @description Name of the default test secret. */
   public static final String SECRET_NAME = 'test_secret';
 
+  /** @description The events that RecordingHandler got. */
+  public static List<HookInboundEvent> seen = new List<HookInboundEvent>();
+
+  /** @description The requests that MockHttp got. */
+  public static List<HttpRequest> requests = new List<HttpRequest>();
+
+  /** @description The Ids that RecordingChannel got. */
+  public static List<Id> dispatched = new List<Id>();
+
   /**
    * @description Reads the static resource HookTestVectors.
    * @return The vectors as an untyped map.
@@ -195,9 +204,6 @@ public class HookTestSupport {
     }
   }
 
-  /** @description The events that RecordingHandler got. */
-  public static List<HookInboundEvent> seen = new List<HookInboundEvent>();
-
   /**
    * @description Does DML, then throws, so the test can check the rollback.
    */
@@ -256,9 +262,6 @@ public class HookTestSupport {
     }
   }
 
-  /** @description The requests that MockHttp got. */
-  public static List<HttpRequest> requests = new List<HttpRequest>();
-
   /**
    * @description Throws a CalloutException, as a timeout does.
    */
@@ -286,9 +289,6 @@ public class HookTestSupport {
       dispatched.addAll(deliveryIds);
     }
   }
-
-  /** @description The Ids that RecordingChannel got. */
-  public static List<Id> dispatched = new List<Id>();
 
   /**
    * @description A transport with fixed status codes and no real callout.

@@ -17,41 +17,59 @@ public inherited sharing class HookRevenantInboundHandler implements HookInbound
       ? (Map<String, Object>) parsed
       : new Map<String, Object>();
     String mode = text(config, 'mode');
-    String keyPath = text(config, 'keyPath');
-    Object keyValue = String.isBlank(keyPath) ? null : event.valueAt(keyPath);
-    String key = keyValue == null ? null : String.valueOf(keyValue);
     if (mode == 'start') {
-      String workflow = required(config, 'workflow');
-      WorkflowEngine.startOrGet(
-        new WorkflowEngine.StartRequest(
-          workflow,
-          String.isBlank(key) ? event.dedupKey : key,
-          new Map<String, Object>{
-            'endpoint' => event.endpoint,
-            'eventId' => event.eventId,
-            'eventType' => event.eventType,
-            'payload' => event.json()
-          }
-        )
-      );
+      start(event, config);
     } else if (mode == 'signal') {
-      String signal = required(config, 'signal');
-      if (String.isBlank(key)) {
-        throw new HookException(
-          'No target key at keyPath "' +
-            keyPath +
-            '". The path is missing or empty.'
-        );
-      }
-      WorkflowEngine.signal(
-        new WorkflowEngine.SignalRequest(key, signal, event.body)
-          .withIdempotencyKey(event.dedupKey)
-      );
+      signal(event, config);
     } else {
       throw new HookException(
         'Set "mode" in Handler_Config__c to start or signal.'
       );
     }
+  }
+
+  private static void start(
+    HookInboundEvent event,
+    Map<String, Object> config
+  ) {
+    String key = keyFrom(event, text(config, 'keyPath'));
+    WorkflowEngine.startOrGet(
+      new WorkflowEngine.StartRequest(
+        required(config, 'workflow'),
+        String.isBlank(key) ? event.dedupKey : key,
+        new Map<String, Object>{
+          'endpoint' => event.endpoint,
+          'eventId' => event.eventId,
+          'eventType' => event.eventType,
+          'payload' => event.json()
+        }
+      )
+    );
+  }
+
+  private static void signal(
+    HookInboundEvent event,
+    Map<String, Object> config
+  ) {
+    String signalName = required(config, 'signal');
+    String keyPath = text(config, 'keyPath');
+    String key = keyFrom(event, keyPath);
+    if (String.isBlank(key)) {
+      throw new HookException(
+        'No target key at keyPath "' +
+          keyPath +
+          '". The path is missing or empty.'
+      );
+    }
+    WorkflowEngine.signal(
+      new WorkflowEngine.SignalRequest(key, signalName, event.body)
+        .withIdempotencyKey(event.dedupKey)
+    );
+  }
+
+  private static String keyFrom(HookInboundEvent event, String keyPath) {
+    Object value = String.isBlank(keyPath) ? null : event.valueAt(keyPath);
+    return value == null ? null : String.valueOf(value);
   }
 
   private static String text(Map<String, Object> config, String name) {

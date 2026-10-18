@@ -94,6 +94,21 @@ public inherited sharing class HookVerifiers {
     return null;
   }
 
+  // Reads "t=1,v1=a,v1=b" into t -> [1], v1 -> [a, b]. Values are lower case.
+  private static Map<String, List<String>> parseStripeHeader(String header) {
+    Map<String, List<String>> parts = new Map<String, List<String>>();
+    for (
+      String part : header == null ? new List<String>() : header.split(',')
+    ) {
+      String key = part.substringBefore('=').trim();
+      if (!parts.containsKey(key)) {
+        parts.put(key, new List<String>());
+      }
+      parts.get(key).add(part.substringAfter('=').trim().toLowerCase());
+    }
+    return parts;
+  }
+
   /**
    * @description A verifier that needs at least one secret.
    */
@@ -221,20 +236,13 @@ public inherited sharing class HookVerifiers {
       HookRequest request,
       List<String> secrets
     ) {
-      String header = request.header('stripe-signature');
-      String ts;
-      List<String> given = new List<String>();
-      for (
-        String part : header == null ? new List<String>() : header.split(',')
-      ) {
-        String key = part.substringBefore('=').trim();
-        String value = part.substringAfter('=').trim();
-        if (key == 't') {
-          ts = value;
-        } else if (key == 'v1') {
-          given.add(value.toLowerCase());
-        }
-      }
+      Map<String, List<String>> parts = parseStripeHeader(
+        request.header('stripe-signature')
+      );
+      String ts = parts.containsKey('t') ? parts.get('t')[0] : null;
+      List<String> given = parts.containsKey('v1')
+        ? parts.get('v1')
+        : new List<String>();
       if (String.isBlank(ts) || given.isEmpty()) {
         return HookVerification.invalid(
           'The Stripe-Signature header is missing or not valid.'

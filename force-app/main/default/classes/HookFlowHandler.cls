@@ -4,6 +4,10 @@
  * variables endpoint, eventId, eventType, body and recordId.
  */
 public inherited sharing class HookFlowHandler implements HookInboundHandler {
+  /** @description Starts the Flow. Tests replace it. */
+  @TestVisible
+  private static Launcher launcher = new FlowLauncher();
+
   /** @description Starts a Flow. Tests replace it. */
   public interface Launcher {
     /**
@@ -25,9 +29,6 @@ public inherited sharing class HookFlowHandler implements HookInboundHandler {
       Flow.Interview.createInterview(flowName, inputs).start();
     }
   }
-
-  @TestVisible
-  private static Launcher launcher = new FlowLauncher();
 
   /**
    * @description Starts the Flow in the handler config.

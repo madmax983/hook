@@ -6,23 +6,7 @@
 global without sharing class HookDelivery {
   /** @description Largest stored response body. */
   public static final Integer MAX_RESPONSE = 2000;
-  /** @description Largest Retry-After that Hook uses, in seconds. */
-  public static final Integer MAX_RETRY_AFTER = 86400;
   private static final Integer MAX_TEXT = 32768;
-  private static final List<String> MONTHS = new List<String>{
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec'
-  };
 
   /** @description Sends the request. Tests can replace it. */
   @TestVisible
@@ -160,7 +144,7 @@ global without sharing class HookDelivery {
     } else {
       Integer after = (code == 429 ||
         code == 503)
-        ? retryAfterSeconds(res.getHeader('Retry-After'))
+        ? HookRetryAfter.seconds(res.getHeader('Retry-After'))
         : null;
       o = retryOutcome(code, after, 'HTTP ' + code);
     }
@@ -192,53 +176,6 @@ global without sharing class HookDelivery {
    */
   public static Outcome configOutcome(String error) {
     return new Outcome('CONFIG', null, error);
-  }
-
-  /**
-   * @description Reads a Retry-After value: seconds or an HTTP-date.
-   * @param raw The header value.
-   * @return The seconds, at most MAX_RETRY_AFTER, or null for a missing, zero, past or bad value.
-   */
-  public static Integer retryAfterSeconds(String raw) {
-    String value = raw == null ? '' : raw.trim();
-    Long seconds;
-    if (value.isNumeric()) {
-      seconds = value.length() > 9 ? MAX_RETRY_AFTER : Long.valueOf(value);
-    } else {
-      Datetime at = parseHttpDate(value);
-      seconds = at == null
-        ? null
-        : at.getTime() / 1000 - HookClock.nowSeconds();
-    }
-    if (seconds == null || seconds < 1) {
-      return null;
-    }
-    return Math.min(seconds, (Long) MAX_RETRY_AFTER).intValue();
-  }
-
-  // Parses an IMF-fixdate, for example "Tue, 14 Nov 2023 22:14:20 GMT".
-  private static Datetime parseHttpDate(String raw) {
-    List<String> parts = raw.split(' ');
-    if (parts.size() != 6 || parts[5] != 'GMT') {
-      return null;
-    }
-    Integer month = MONTHS.indexOf(parts[2]) + 1;
-    List<String> clock = parts[4].split(':');
-    if (month == 0 || clock.size() != 3) {
-      return null;
-    }
-    try {
-      return Datetime.newInstanceGmt(
-        Integer.valueOf(parts[3]),
-        month,
-        Integer.valueOf(parts[1]),
-        Integer.valueOf(clock[0]),
-        Integer.valueOf(clock[1]),
-        Integer.valueOf(clock[2])
-      );
-    } catch (TypeException e) {
-      return null;
-    }
   }
 
   /**

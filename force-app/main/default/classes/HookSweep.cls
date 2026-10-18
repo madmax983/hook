@@ -100,6 +100,7 @@ public without sharing class HookSweep implements Schedulable {
   /**
    * @description Schedules four jobs, at minutes 0, 15, 30 and 45. It skips a job that exists.
    */
+  @SuppressWarnings('PMD.OperationWithLimitsInLoop')
   public static void schedule() {
     Set<String> existing = new Set<String>();
     for (CronTrigger ct : jobs()) {

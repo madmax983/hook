@@ -89,14 +89,14 @@ private class HookDeliveryTest {
   @IsTest
   static void retryAfterAcceptsSecondsAndHttpDates() {
     HookClock.fixedSeconds = 1700000000L;
-    Assert.areEqual(120, HookDelivery.retryAfterSeconds('120'));
+    Assert.areEqual(120, HookRetryAfter.seconds('120'));
     Assert.areEqual(
       60,
-      HookDelivery.retryAfterSeconds('Tue, 14 Nov 2023 22:14:20 GMT')
+      HookRetryAfter.seconds('Tue, 14 Nov 2023 22:14:20 GMT')
     );
-    Assert.isNull(HookDelivery.retryAfterSeconds('soon'));
-    Assert.isNull(HookDelivery.retryAfterSeconds(null));
-    Assert.isNull(HookDelivery.retryAfterSeconds('0'));
-    Assert.areEqual(86400, HookDelivery.retryAfterSeconds('99999999999'));
+    Assert.isNull(HookRetryAfter.seconds('soon'));
+    Assert.isNull(HookRetryAfter.seconds(null));
+    Assert.isNull(HookRetryAfter.seconds('0'));
+    Assert.areEqual(86400, HookRetryAfter.seconds('99999999999'));
   }
 }
