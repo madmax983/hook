@@ -9,12 +9,21 @@ global inherited sharing class HookRequest {
   global String endpoint { get; private set; }
   /** @description The raw body bytes. Verifiers sign these bytes. */
   global Blob bodyBlob { get; private set; }
-  /** @description The body as UTF-8 text. */
-  global String body { get; private set; }
+  /** @description The body as UTF-8 text, or null when it is not UTF-8. */
+  global String body {
+    get {
+      if (!decoded) {
+        decodeBody();
+      }
+      return text;
+    }
+  }
   /** @description The caller IP address. */
   global String remoteAddress { get; private set; }
 
   private final Map<String, String> headers = new Map<String, String>();
+  private String text;
+  private Boolean decoded = false;
   private final Map<String, String> params;
 
   /**
@@ -52,10 +61,12 @@ global inherited sharing class HookRequest {
    * @return True when the body is valid UTF-8.
    */
   public Boolean decodeBody() {
+    decoded = true;
     try {
-      body = bodyBlob.toString();
+      text = bodyBlob.toString();
       return true;
     } catch (Exception e) {
+      text = null;
       return false;
     }
   }

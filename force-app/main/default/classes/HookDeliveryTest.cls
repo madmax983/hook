@@ -45,7 +45,10 @@ private class HookDeliveryTest {
       new HookTestSupport.MockHttp()
         .add(503, '', new Map<String, String>{ 'Retry-After' => '30' })
     );
-    Datetime next = Datetime.now().addMinutes(3);
+    // A Datetime field keeps whole seconds.
+    Datetime next = Datetime.newInstance(
+      (Datetime.now().addMinutes(3).getTime() / 1000) * 1000
+    );
 
     Test.startTest();
     HookDelivery.Attempt first = HookDelivery.prepare(a.Id);

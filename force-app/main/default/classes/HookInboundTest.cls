@@ -592,4 +592,28 @@ private class HookInboundTest {
       throw new HookException('after DML');
     }
   }
+
+  @IsTest
+  static void theBodyDecodesWhenARequestIsRead() {
+    HookRequest ok = HookTestSupport.request('x', 'caf\u00e9', null);
+    Assert.areEqual(
+      'caf\u00e9',
+      ok.body,
+      'a verifier can read the body with no decodeBody()'
+    );
+    HookRequest bad = new HookRequest(
+      'POST',
+      'x',
+      EncodingUtil.convertFromHex('c328'),
+      null,
+      null,
+      null
+    );
+    Assert.isNull(bad.body);
+  }
+
+  @IsTest
+  static void anUnknownEndpointReadsNoRecord() {
+    Assert.isNull(HookEndpoints.get('Hook_No_Such_Endpoint'));
+  }
 }

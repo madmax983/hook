@@ -132,18 +132,12 @@ private class HookSweepTest {
 
   @IsTest
   static void theSchedulableRunsTheSweep() {
-    HookTestSupport.settings();
-    Test.startTest();
-    System.schedule('Hook Sweep test', '0 0 0 1 1 ? 2099', new HookSweep());
-    Test.stopTest();
-    Assert.areEqual(
-      1,
-      [
-        SELECT COUNT()
-        FROM CronTrigger
-        WHERE CronJobDetail.Name = 'Hook Sweep test'
-      ]
-    );
+    HookTestSupport.settings().Retention_Days__c = 7;
+    Hook_Inbound_Event__c old = inbound('Processed', 0);
+    old.Processed_At__c = Datetime.now().addDays(-8);
+    update old;
+    new HookSweep().execute(null);
+    Assert.areEqual(0, [SELECT COUNT() FROM Hook_Inbound_Event__c]);
   }
 
   @IsTest
