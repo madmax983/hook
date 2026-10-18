@@ -5,43 +5,53 @@
  * without sharing.
  */
 public without sharing class HookInboundDispatcher {
-  /** @description Events for one trigger run. Each event uses two DML statements for its savepoint. */
+  /** @description Most events for one trigger run. */
   @TestVisible
   private static Integer chunkSize = 20;
+  /** @description Longest retry delay that a delayed job covers. The sweep covers longer ones. */
+  private static final Integer DELAYED_JOB_MAX_SECONDS = 600;
 
   /**
    * @description Publishes one Hook_Inbound__e for each row, after commit.
-   * @param ids The Hook_Inbound_Event__c Ids.
+   * It sets Dispatched_At__c on each row in memory. A row whose publish fails
+   * gets a null Dispatched_At__c, so the sweep publishes it again with no
+   * attempt counted. The caller saves the rows.
+   * @param rows The rows. Each has an Id.
    */
-  public static void publish(List<Id> ids) {
-    List<Hook_Inbound__e> events = new List<Hook_Inbound__e>();
-    for (Id id : ids) {
-      events.add(new Hook_Inbound__e(Inbound_Event_Id__c = id));
+  public static void publish(List<Hook_Inbound_Event__c> rows) {
+    if (rows.isEmpty()) {
+      return;
     }
-    if (!events.isEmpty()) {
-      EventBus.publish(events);
+    List<Hook_Inbound__e> events = new List<Hook_Inbound__e>();
+    Datetime now = HookClock.now();
+    for (Hook_Inbound_Event__c rec : rows) {
+      events.add(new Hook_Inbound__e(Inbound_Event_Id__c = rec.Id));
+      rec.Dispatched_At__c = now;
+    }
+    List<Database.SaveResult> results = EventBus.publish(events);
+    for (Integer i = 0; i < results.size(); i++) {
+      if (!results[i].isSuccess()) {
+        rows[i].Dispatched_At__c = null;
+      }
     }
   }
 
   /**
-   * @description Handles a trigger batch. It processes one chunk and sets a
-   * resume checkpoint, so the platform sends the rest in a new run.
+   * @description Handles a trigger batch. It stops after chunkSize events, or
+   * when half of a limit is used. It sets a resume checkpoint, so the
+   * platform sends the rest in a new run.
    * @param events The trigger events.
    */
   public static void onEvents(List<Hook_Inbound__e> events) {
-    Set<Id> ids = new Set<Id>();
-    Integer count = Math.min(events.size(), chunkSize);
-    for (Integer i = 0; i < count; i++) {
-      Id id = toId(events[i].Inbound_Event_Id__c);
-      if (id != null) {
-        ids.add(id);
-      }
+    List<Id> ids = new List<Id>();
+    for (Hook_Inbound__e e : events) {
+      ids.add(toId(e.Inbound_Event_Id__c));
     }
-    if (events.size() > count) {
+    Integer done = dispatchInOrder(ids, chunkSize);
+    if (done < events.size()) {
       EventBus.TriggerContext.currentContext()
-        .setResumeCheckpoint(events[count - 1].ReplayId);
+        .setResumeCheckpoint(events[done - 1].ReplayId);
     }
-    dispatch(ids);
   }
 
   private static Id toId(String value) {
@@ -58,36 +68,83 @@ public without sharing class HookInboundDispatcher {
    * @param ids The Hook_Inbound_Event__c Ids.
    */
   public static void dispatch(Set<Id> ids) {
+    dispatchInOrder(new List<Id>(ids), ids.size());
+  }
+
+  // Runs the rows in the order of the Ids. Gives the count of Ids used: at
+  // least 1, at most max. It stops early when half of a limit is used.
+  private static Integer dispatchInOrder(List<Id> ids, Integer max) {
+    Map<Id, Hook_Inbound_Event__c> rows = new Map<Id, Hook_Inbound_Event__c>(
+      [
+        SELECT
+          Id,
+          Endpoint__c,
+          Event_Id__c,
+          Event_Type__c,
+          Dedup_Key__c,
+          Body__c,
+          Headers__c,
+          Status__c,
+          Attempts__c,
+          Next_Attempt_At__c
+        FROM Hook_Inbound_Event__c
+        WHERE Id IN :ids AND Status__c IN ('Pending', 'Retrying')
+        WITH SYSTEM_MODE
+      ]
+    );
     Datetime now = HookClock.now();
-    List<Hook_Inbound_Event__c> rows = [
-      SELECT
-        Id,
-        Endpoint__c,
-        Event_Id__c,
-        Event_Type__c,
-        Dedup_Key__c,
-        Body__c,
-        Headers__c,
-        Status__c,
-        Attempts__c,
-        Next_Attempt_At__c
-      FROM Hook_Inbound_Event__c
-      WHERE Id IN :ids AND Status__c IN ('Pending', 'Retrying')
-      WITH SYSTEM_MODE
-    ];
     List<Hook_Inbound_Event__c> changed = new List<Hook_Inbound_Event__c>();
-    for (Hook_Inbound_Event__c rec : rows) {
+    Integer used = 0;
+    while (used < Math.min(max, ids.size())) {
+      Hook_Inbound_Event__c rec = rows.remove(ids[used]);
+      used++;
       if (
-        rec.Status__c == 'Retrying' &&
-        rec.Next_Attempt_At__c != null &&
-        rec.Next_Attempt_At__c > now
+        rec == null ||
+        (rec.Status__c == 'Retrying' &&
+        rec.Next_Attempt_At__c > now)
       ) {
         continue;
       }
       run(rec);
       changed.add(rec);
+      if (nearLimits()) {
+        break;
+      }
     }
     update as system changed;
+    armTimer(changed);
+    return Math.max(1, used);
+  }
+
+  private static Boolean nearLimits() {
+    return Limits.getCpuTime() * 2 > Limits.getLimitCpuTime() ||
+      Limits.getQueries() * 2 > Limits.getLimitQueries() ||
+      Limits.getDmlStatements() * 2 > Limits.getLimitDmlStatements() ||
+      Limits.getDmlRows() * 2 > Limits.getLimitDmlRows();
+  }
+
+  // When a retry is due in 10 minutes or less, a delayed job publishes it.
+  private static void armTimer(List<Hook_Inbound_Event__c> rows) {
+    Datetime first;
+    for (Hook_Inbound_Event__c rec : rows) {
+      if (
+        rec.Status__c == 'Retrying' &&
+        (first == null ||
+        rec.Next_Attempt_At__c < first)
+      ) {
+        first = rec.Next_Attempt_At__c;
+      }
+    }
+    if (first == null) {
+      return;
+    }
+    Long seconds = (first.getTime() - HookClock.now().getTime()) / 1000;
+    if (seconds <= DELAYED_JOB_MAX_SECONDS) {
+      HookAsync.enqueue(
+        new HookInboundRetryJob(),
+        Math.max(1, Math.ceil(seconds / 60.0).intValue())
+      );
+    }
   }
 
   private static void run(Hook_Inbound_Event__c rec) {

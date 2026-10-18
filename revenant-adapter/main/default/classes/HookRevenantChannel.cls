@@ -15,11 +15,14 @@ public without sharing class HookRevenantChannel implements HookChannel {
   }
 
   /**
-   * @description Starts or gets one workflow for each delivery.
+   * @description Starts or gets one workflow for each delivery. For a
+   * redelivery, it cancels the workflow of the last generation when that
+   * workflow still runs, so two workflows never send the same row.
    * @param deliveryIds The Hook_Delivery__c Ids.
    */
   public void dispatch(List<Id> deliveryIds) {
     List<WorkflowEngine.StartRequest> requests = new List<WorkflowEngine.StartRequest>();
+    List<String> previous = new List<String>();
     for (Hook_Delivery__c d : [
       SELECT Id, Generation__c
       FROM Hook_Delivery__c
@@ -29,6 +32,9 @@ public without sharing class HookRevenantChannel implements HookChannel {
       Integer generation = d.Generation__c == null
         ? 0
         : d.Generation__c.intValue();
+      if (generation > 0) {
+        previous.add(correlationKey(d.Id, generation - 1));
+      }
       requests.add(
         new WorkflowEngine.StartRequest(
           HookRevenantDelivery.WORKFLOW,
@@ -37,8 +43,23 @@ public without sharing class HookRevenantChannel implements HookChannel {
         )
       );
     }
+    cancelRunning(previous);
     if (!requests.isEmpty()) {
       WorkflowEngine.startOrGet(requests);
+    }
+  }
+
+  @SuppressWarnings('PMD.OperationWithLimitsInLoop')
+  private static void cancelRunning(List<String> keys) {
+    if (keys.isEmpty()) {
+      return;
+    }
+    for (
+      WorkflowEngine.WorkflowStatus status : WorkflowStatusRead.getStatus(keys)
+    ) {
+      if (status != null && !status.isTerminal) {
+        WorkflowEngine.cancel(status.instanceId);
+      }
     }
   }
 }

@@ -40,28 +40,64 @@ public without sharing class HookOutbound {
     return ids;
   }
 
-  // Inserts the rows. A duplicate dedup key is skipped. Gives the new rows.
+  // Inserts the rows. A duplicate dedup key is skipped. A row lock error on
+  // the subscription gets one more try. Gives the new rows.
   private static List<Hook_Delivery__c> insertNew(List<Hook_Delivery__c> rows) {
     List<Hook_Delivery__c> inserted = new List<Hook_Delivery__c>();
-    if (rows.isEmpty()) {
-      return inserted;
-    }
-    Database.SaveResult[] results = Database.insert(
+    List<Hook_Delivery__c> locked = new List<Hook_Delivery__c>();
+    collect(
       rows,
-      false,
-      AccessLevel.SYSTEM_MODE
+      Database.insert(rows, false, AccessLevel.SYSTEM_MODE),
+      inserted,
+      locked
     );
+    if (!locked.isEmpty()) {
+      List<Hook_Delivery__c> again = new List<Hook_Delivery__c>();
+      collect(
+        locked,
+        Database.insert(locked, false, AccessLevel.SYSTEM_MODE),
+        inserted,
+        again
+      );
+      if (!again.isEmpty()) {
+        throw new HookException(
+          'Hook could not store a delivery: the subscription is locked.'
+        );
+      }
+    }
+    return inserted;
+  }
+
+  private static void collect(
+    List<Hook_Delivery__c> rows,
+    Database.SaveResult[] results,
+    List<Hook_Delivery__c> inserted,
+    List<Hook_Delivery__c> locked
+  ) {
     for (Integer i = 0; i < results.size(); i++) {
       if (results[i].isSuccess()) {
         inserted.add(rows[i]);
-      } else if (!HookInbound.isDuplicate(results[i])) {
+      } else if (hasStatus(results[i], StatusCode.UNABLE_TO_LOCK_ROW)) {
+        locked.add(rows[i].clone(false, true));
+      } else if (!hasStatus(results[i], StatusCode.DUPLICATE_VALUE)) {
         throw new HookException(
           'Hook could not store a delivery: ' +
           results[i].getErrors()[0].getMessage()
         );
       }
     }
-    return inserted;
+  }
+
+  private static Boolean hasStatus(
+    Database.SaveResult result,
+    StatusCode code
+  ) {
+    for (Database.Error err : result.getErrors()) {
+      if (err.getStatusCode() == code) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -105,7 +141,7 @@ public without sharing class HookOutbound {
             Crypto.generateDigest('SHA-256', Blob.valueOf(id))
           );
       }
-      return new Hook_Delivery__c(
+      Hook_Delivery__c row = new Hook_Delivery__c(
         Subscription__c = sub.Id,
         Event_Id__c = id.left(MAX_KEY),
         Event_Type__c = type.left(MAX_KEY),
@@ -118,6 +154,10 @@ public without sharing class HookOutbound {
           ? HookConfig.defaultChannel()
           : sub.Channel__c.trim()
       );
+      if (row.Channel__c == HookQueueChannel.NAME) {
+        HookQueueChannel.stampNew(row);
+      }
+      return row;
     }
   }
 
@@ -171,11 +211,19 @@ public without sharing class HookOutbound {
   }
 
   /**
-   * @description Calls the channel of each row. A channel that cannot be made fails its rows.
+   * @description Calls the channel of each row. When Hook cannot make the channel, it sets the rows to Failed.
    * @param rows The rows. Each has Channel__c.
    */
   public static void dispatch(List<Hook_Delivery__c> rows) {
-    Map<String, List<Id>> byChannel = groupByChannel(rows);
+    List<Hook_Delivery__c> rest = new List<Hook_Delivery__c>();
+    for (Hook_Delivery__c d : rows) {
+      if (HookQueueChannel.isClaimedHere(d)) {
+        HookQueueChannel.ensureJob();
+      } else {
+        rest.add(d);
+      }
+    }
+    Map<String, List<Id>> byChannel = groupByChannel(rest);
     List<Hook_Delivery__c> failed = new List<Hook_Delivery__c>();
     for (String name : byChannel.keySet()) {
       try {

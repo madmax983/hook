@@ -2,7 +2,7 @@
 <CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
     <label>Hook Inbound</label>
     <pluralLabel>Hook Inbound</pluralLabel>
-    <description>Starts the processing of one stored inbound event. Hook publishes it after commit.</description>
+    <description>Tells Hook to run the handler for one stored event. Hook publishes it after commit.</description>
     <deploymentStatus>Deployed</deploymentStatus>
     <eventType>HighVolume</eventType>
     <publishBehavior>PublishAfterCommit</publishBehavior>

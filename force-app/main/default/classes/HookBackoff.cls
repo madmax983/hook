@@ -1,6 +1,6 @@
 /**
  * @description Exponential backoff with jitter: base * 2^(attempt - 1),
- * capped, then +/- 20%.
+ * +/- 20%, then capped.
  */
 public inherited sharing class HookBackoff {
   /** @description Tests set false to get exact delays. */
@@ -21,13 +21,12 @@ public inherited sharing class HookBackoff {
   ) {
     Integer exponent = Math.min(Math.max(attempt, 1) - 1, 30);
     Decimal factor = Decimal.valueOf(Math.pow(2, exponent));
-    Decimal raw = Math.min(
-      Decimal.valueOf(baseSeconds) * factor,
-      Decimal.valueOf(maxSeconds)
-    );
+    Decimal raw = Decimal.valueOf(baseSeconds) * factor;
     if (jitterEnabled) {
       raw = raw * (0.8 + 0.4 * Decimal.valueOf(Math.random()));
     }
+    // The cap comes after the jitter, so no delay is longer than the cap.
+    raw = Math.min(raw, Decimal.valueOf(maxSeconds));
     return Math.max(1, raw.round(System.RoundingMode.HALF_UP).intValue());
   }
 }

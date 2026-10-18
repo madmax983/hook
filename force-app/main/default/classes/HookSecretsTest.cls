@@ -69,6 +69,12 @@ private class HookSecretsTest {
     Assert.areEqual(3600, HookBackoff.delaySeconds(30, 60, 3600));
     HookBackoff.jitterEnabled = true;
     for (Integer i = 0; i < 20; i++) {
+      Assert.isTrue(
+        HookBackoff.delaySeconds(30, 60, 3600) <= 3600,
+        'the cap holds with jitter'
+      );
+    }
+    for (Integer i = 0; i < 20; i++) {
       Integer d = HookBackoff.delaySeconds(3, 100, 3600);
       Assert.isTrue(d >= 320 && d <= 480, String.valueOf(d));
     }
@@ -115,5 +121,13 @@ private class HookSecretsTest {
     Assert.isTrue(
       Math.abs(HookClock.nowSeconds() - Datetime.now().getTime() / 1000) <= 1
     );
+  }
+
+  @IsTest
+  static void setSecretRevokesThePreviousValue() {
+    Hook.setSecret('a', 'old');
+    Hook.rotateSecret('a', 24);
+    Hook.setSecret('a', 'fresh');
+    Assert.areEqual(new List<String>{ 'fresh' }, HookSecrets.valuesFor('a'));
   }
 }

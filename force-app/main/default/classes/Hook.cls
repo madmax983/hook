@@ -60,16 +60,14 @@ global without sharing class Hook {
       WHERE Id IN :inboundIds
       WITH SYSTEM_MODE
     ];
-    List<Id> ids = new List<Id>();
     for (Hook_Inbound_Event__c rec : rows) {
       rec.Status__c = 'Pending';
       rec.Attempts__c = 0;
       rec.Next_Attempt_At__c = null;
       rec.Last_Error__c = null;
-      ids.add(rec.Id);
     }
+    HookInboundDispatcher.publish(rows);
     update as system rows;
-    HookInboundDispatcher.publish(ids);
   }
 
   /**

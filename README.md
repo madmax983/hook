@@ -32,7 +32,7 @@ Hook.scheduleSweep();
 2. Open **Public Access Settings** of the Site. Open the guest user. Assign the permission set **Hook_Guest**.
 3. The endpoint URL is `https://<site domain>/services/apexrest/hook/<name>`.
 
-`Hook_Guest` gives only the class `HookInboundResource` and create access on `Hook_Inbound__e`.
+`Hook_Guest` gives only the class `HookInboundResource`, and read and create access on `Hook_Inbound__e`. A guest cannot use an endpoint with the scheme `NONE`.
 
 ### 2. Set the secret
 
@@ -73,6 +73,8 @@ For another provider, set `Verifier_Class__c` to a class that implements `HookVe
 
 When the scheme gives no event Id, set `Event_Id_Header__c` or `Event_Id_Path__c` (for example `data.id`). Else Hook uses the SHA-256 of the body. Do the same for the type with `Event_Type_Header__c` or `Event_Type_Path__c`.
 
+The dedup key uses only signed data: the Id of `STANDARD_WEBHOOKS`, `STRIPE` or `SLACK`, else `Event_Id_Path__c`, else the body hash. An Id from an unsigned header (for example `X-GitHub-Delivery`) shows in `Event_Id__c`, but a replay with a new header Id is still a duplicate. Hook does not store `Authorization`, `Cookie`, `Proxy-Authorization`, `X-Api-Key` or the `Signature_Header__c` header.
+
 ### 4. Write a handler
 
 ```apex
@@ -104,7 +106,9 @@ public class PaymentHandler implements HookInboundHandler {
 
 ### States
 
-`Hook_Inbound_Event__c.Status__c`: `Pending`, then `Processed`. A handler error sets `Retrying` with backoff. After the last attempt, or for a bad handler class, it is `Failed`. To process again: `Hook.replayInbound(ids)` or the Flow action **Replay Webhook**.
+`Hook_Inbound_Event__c.Status__c`: `Pending`, then `Processed`. A handler error sets `Retrying` with backoff. After the last attempt, or for a bad handler class, it is `Failed`. A dispatch that stops with no result (for example a limit error) counts as an attempt when the sweep finds it. To process again: `Hook.replayInbound(ids)` or the Flow action **Replay Webhook**.
+
+One trigger run stops after 20 events or when half of a limit is used. The platform sends the rest in a new run.
 
 ## Outbound Webhooks
 
@@ -153,17 +157,20 @@ The subscriber can verify it with any Standard Webhooks library. Deduplicate on 
 | Response | Result |
 |----------|--------|
 | 2xx | `Delivered`. The failure count goes to 0 |
-| 429 or 503 with `Retry-After` | `Retrying` after that time (at most 24 h) |
-| Other non-2xx, timeout, `CalloutException` | `Retrying` after `60 s * 2^(attempt-1)` +/- 20%, at most 6 h |
+| 429 or 503 with `Retry-After` | `Retrying` after that time, at most `Max_Delay_Seconds__c` (default 6 h) |
+| Other non-2xx, timeout, `CalloutException` | `Retrying` after `60 s * 2^(attempt-1)` +/- 20%, at most `Max_Delay_Seconds__c` (default 6 h) |
 | The last attempt fails | `Failed` |
 | 410 | `Failed`. The subscription is disabled |
-| No secret, inactive subscription | `Failed` with the reason |
+| No secret, or a secret that Hook cannot use | `Failed` with the reason |
+| Inactive subscription | `Pending`. No attempt counts. The row waits |
 
-After `Disable_After_Failures__c` failed attempts in a row (default 50), Hook disables the subscription. Rows of an inactive subscription wait. Make the subscription active again to send them. To send again: `Hook.redeliver(ids)` or **Replay Webhook**.
+After `Disable_After_Failures__c` failed attempts in a row (default 50), Hook disables the subscription. Rows of an inactive subscription wait. Make the subscription active again, and the queue sends them. To send again: `Hook.redeliver(ids)` or **Replay Webhook**.
+
+Hook writes a result only when its job still owns the row. A redelivery during a send wins. Hook changes `Active__c` only to disable a subscription.
 
 ### Secret rotation
 
-`Hook.rotateSecret('acme', 24)` makes a new secret. For 24 hours Hook signs with the new and the old secret. Inbound endpoints accept both.
+`Hook.rotateSecret('acme', 24)` makes a new secret. For 24 hours Hook signs with the new and the old secret. Inbound endpoints accept both. To revoke a leaked secret at once, use `Hook.setSecret`: it removes the old value.
 
 ## Settings
 
@@ -191,7 +198,11 @@ The folder `revenant-adapter` uses only the Hook and Revenant global APIs.
 - 429 or 503 with `Retry-After` is a durable `sleep`.
 - Other failures `retry` with backoff.
 - The last attempt, 410 and a missing secret `fail`.
+- An inactive subscription sets the row to `Pending` and fails the workflow. Redeliver after you make the subscription active again.
 - A delivered row completes with no callout, so a re-run is safe.
+- A redelivery cancels the workflow of the last generation when it still runs.
+- Revenant owns the wait: 60 s, then doubled for each attempt. The Hook delay settings do not apply. `Next_Attempt_At__c` only shows the time.
+- When Revenant cancels or fails the workflow on its side, the row can stay `Retrying`. Redeliver it.
 
 **Durable inbound.** Set `Handler_Class__c` to `HookRevenantInboundHandler`:
 
@@ -200,7 +211,7 @@ The folder `revenant-adapter` uses only the Hook and Revenant global APIs.
 {"mode": "signal", "signal": "PaymentReceived", "keyPath": "data.object.metadata.order_key"}
 ```
 
-`start` uses `startOrGet`. The input holds `endpoint`, `eventId`, `eventType` and `payload`. With no `keyPath`, the key is the dedup key. `signal` uses the dedup key as the idempotency key.
+`start` uses `startOrGet`. The input holds `endpoint`, `eventId`, `eventType` and `payload`. With no `keyPath`, the key is the dedup key. A key that an instance of another workflow has is an error. `signal` uses the dedup key as the idempotency key. A signal to a key with no running workflow is an error, so Hook retries it. Hook changes a key longer than 200 characters to `sha256:` and its hash.
 
 In a namespaced Revenant install, add the namespace to the Revenant types in the adapter (for example `rvn.WorkflowStep`).
 
@@ -210,7 +221,8 @@ In a namespaced Revenant install, add the namespace to the Revenant types in the
 - Apex REST does not give the raw bytes of an `application/x-www-form-urlencoded` body. Hook cannot verify such a request (for example a Slack slash command). JSON providers work.
 - Each inbound request uses one platform event.
 - A body or payload can have at most 131,072 characters.
-- The sweep runs every 15 minutes. A retry longer than 10 minutes waits for the sweep.
+- The sweep runs every 15 minutes. A delayed job covers a retry of 10 minutes or less, in both directions. A longer retry waits for the sweep.
+- A `callout:` endpoint can use any Named Credential in the org. Give `Hook_Admin` only to users who may use those credentials.
 
 ## Development
 

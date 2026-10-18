@@ -3,6 +3,7 @@
 // Needs Java, apex-ls (scripts/apex-ls/fetch-apex-ls.sh) and the submodules
 // (git submodule update --init --recursive).
 // Set REQUIRE_APEX_LS=1 to fail when Java or apex-ls is missing.
+// Set APEX_PACKAGES to a comma list of package folders to compile only those.
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -32,6 +33,9 @@ export function makeWorkspace(root = ROOT) {
   const project = JSON.parse(readFileSync(join(root, "sfdx-project.json"), "utf8"));
   const found = [];
   const missing = [];
+  // APEX_PACKAGES=force-app compiles only the core, with no Revenant (AC-RV-4).
+  const only = process.env.APEX_PACKAGES ? process.env.APEX_PACKAGES.split(",") : null;
+  if (only) project.packageDirectories = project.packageDirectories.filter((d) => only.includes(d.path));
   for (const { path } of project.packageDirectories) {
     const dir = join(root, path);
     (existsSync(dir) && readdirSync(dir).length > 0 ? found : missing).push(path);

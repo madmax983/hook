@@ -82,11 +82,12 @@ public inherited sharing class HookConfig {
   }
 
   /**
-   * @description Gives the lease of a claimed row.
+   * @description Gives the lease of a claimed row. At least 3 minutes, so a
+   * job with 120 s of callouts ends in its lease.
    * @return The minutes.
    */
   public static Integer leaseMinutes() {
-    return Math.max(1, read(current.Lease_Minutes__c, 10));
+    return Math.max(3, read(current.Lease_Minutes__c, 10));
   }
 
   /**

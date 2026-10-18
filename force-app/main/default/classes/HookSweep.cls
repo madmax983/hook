@@ -1,7 +1,8 @@
 /**
  * @description The safety net (AC-SW-1 to AC-SW-3). It claims due deliveries,
- * publishes due and stale inbound events, and deletes old done rows. It must
- * see every row, so it runs without sharing.
+ * publishes due and stale inbound events, and deletes old done rows. Failed
+ * rows stay as a dead letter list. It must see every row, so it runs without
+ * sharing.
  */
 public without sharing class HookSweep implements Schedulable {
   /** @description The name prefix of the scheduled jobs. */
@@ -21,80 +22,130 @@ public without sharing class HookSweep implements Schedulable {
   }
 
   /**
-   * @description Runs the sweep now.
+   * @description Runs the sweep now. Each part runs on its own: an error in
+   * one part does not stop the other parts.
    */
   public static void run() {
     Boolean wasInJob = HookAsync.inJob;
     HookAsync.inJob = true;
     try {
-      if (HookQueueChannel.hasDue()) {
-        HookAsync.enqueue(new HookDispatchJob(null), 0);
+      try {
+        if (HookQueueChannel.hasDue()) {
+          HookAsync.enqueue(new HookDispatchJob(null), 0);
+        }
+      } catch (Exception e) {
+        log('claim', e);
       }
-      sweepInbound();
-      purge();
+      try {
+        republishInbound();
+      } catch (Exception e) {
+        log('inbound', e);
+      }
+      try {
+        purge();
+      } catch (Exception e) {
+        log('purge', e);
+      }
     } finally {
       HookAsync.inJob = wasInJob;
     }
   }
 
-  private static void sweepInbound() {
+  @SuppressWarnings('PMD.AvoidDebugStatements')
+  private static void log(String part, Exception e) {
+    System.debug(
+      LoggingLevel.ERROR,
+      'Hook sweep ' + part + ': ' + e.getMessage()
+    );
+  }
+
+  /**
+   * @description Publishes the inbound rows that wait: a due Retrying row, a
+   * Pending row whose publish failed, and a row whose last dispatch is more
+   * than 5 minutes old with no result. A dispatch with no result counts as an
+   * attempt, so a poison event cannot loop forever.
+   */
+  public static void republishInbound() {
     Datetime now = HookClock.now();
     Datetime staleBefore = now.addMinutes(-STALE_MINUTES);
     List<Hook_Inbound_Event__c> rows = [
-      SELECT Id, Endpoint__c, Status__c, Attempts__c
+      SELECT
+        Id,
+        Endpoint__c,
+        Status__c,
+        Attempts__c,
+        Next_Attempt_At__c,
+        Dispatched_At__c
       FROM Hook_Inbound_Event__c
       WHERE
         (Status__c = 'Retrying'
         AND Next_Attempt_At__c <= :now)
         OR (Status__c = 'Pending'
-        AND Received_At__c < :staleBefore)
+        AND (Dispatched_At__c = NULL
+        OR Dispatched_At__c < :staleBefore))
       WITH SYSTEM_MODE
+      ORDER BY Received_At__c
       LIMIT :MAX_INBOUND
     ];
-    List<Id> publish = new List<Id>();
-    List<Hook_Inbound_Event__c> changed = new List<Hook_Inbound_Event__c>();
+    List<Hook_Inbound_Event__c> publish = new List<Hook_Inbound_Event__c>();
+    List<Hook_Inbound_Event__c> failed = new List<Hook_Inbound_Event__c>();
     for (Hook_Inbound_Event__c rec : rows) {
-      if (rec.Status__c == 'Pending') {
-        // A Pending row is stale when its dispatch died. Count it, so a
-        // poison event cannot loop forever.
-        Integer made = rec.Attempts__c == null ? 0 : rec.Attempts__c.intValue();
-        Integer max = HookInboundDispatcher.maxAttempts(
-          HookEndpoints.get(rec.Endpoint__c)
-        );
-        if (made >= max) {
+      Boolean lost =
+        rec.Dispatched_At__c != null &&
+        (rec.Status__c == 'Pending' ||
+        rec.Dispatched_At__c >= rec.Next_Attempt_At__c);
+      if (lost && rec.Dispatched_At__c >= staleBefore) {
+        continue;
+      }
+      if (lost) {
+        Integer made =
+          (rec.Attempts__c == null ? 0 : rec.Attempts__c.intValue()) + 1;
+        rec.Attempts__c = made;
+        if (
+          made >=
+          HookInboundDispatcher.maxAttempts(HookEndpoints.get(rec.Endpoint__c))
+        ) {
           rec.Status__c = 'Failed';
+          rec.Next_Attempt_At__c = null;
           rec.Last_Error__c =
             'Hook gave up after ' +
             made +
             ' dispatches with no result.';
-          changed.add(rec);
+          failed.add(rec);
           continue;
         }
-        rec.Attempts__c = made + 1;
-        changed.add(rec);
       }
-      publish.add(rec.Id);
+      publish.add(rec);
     }
-    update as system changed;
     HookInboundDispatcher.publish(publish);
+    publish.addAll(failed);
+    update as system publish;
   }
 
   private static void purge() {
     Datetime cutoff = HookClock.now().addDays(-HookConfig.retentionDays());
-    delete as system [
-      SELECT Id
-      FROM Hook_Delivery__c
-      WHERE Status__c = 'Delivered' AND Delivered_At__c < :cutoff
-      WITH SYSTEM_MODE
-      LIMIT :MAX_ROWS
-    ];
-    delete as system [
-      SELECT Id
-      FROM Hook_Inbound_Event__c
-      WHERE Status__c = 'Processed' AND Processed_At__c < :cutoff
-      WITH SYSTEM_MODE
-      LIMIT :MAX_ROWS
-    ];
+    Database.delete(
+      [
+        SELECT Id
+        FROM Hook_Delivery__c
+        WHERE Status__c = 'Delivered' AND Delivered_At__c < :cutoff
+        WITH SYSTEM_MODE
+        LIMIT :MAX_ROWS
+      ],
+      false,
+      AccessLevel.SYSTEM_MODE
+    );
+    Database.delete(
+      [
+        SELECT Id
+        FROM Hook_Inbound_Event__c
+        WHERE Status__c = 'Processed' AND Processed_At__c < :cutoff
+        WITH SYSTEM_MODE
+        LIMIT :MAX_ROWS
+      ],
+      false,
+      AccessLevel.SYSTEM_MODE
+    );
   }
 
   /**

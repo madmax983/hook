@@ -12,6 +12,7 @@ private class HookInboundTest {
       'X-GitHub-Delivery' => deliveryId,
       'X-GitHub-Event' => 'pull_request',
       'Authorization' => 'Bearer do-not-store',
+      'Proxy-Authorization' => 'Basic do-not-store',
       'Cookie' => 'sid=do-not-store'
     };
   }
@@ -68,7 +69,11 @@ private class HookInboundTest {
     Assert.areEqual('gh', rec.Endpoint__c);
     Assert.areEqual('d-1', rec.Event_Id__c);
     Assert.areEqual('pull_request', rec.Event_Type__c);
-    Assert.areEqual('gh:d-1', rec.Dedup_Key__c);
+    Assert.areEqual(
+      'gh:' + sha256((String) github.get('body')),
+      rec.Dedup_Key__c,
+      'X-GitHub-Delivery is not signed, so the key is the body hash'
+    );
     Assert.areEqual((String) github.get('body'), rec.Body__c);
     Assert.isNotNull(rec.Received_At__c);
     Assert.isFalse(
@@ -361,6 +366,230 @@ private class HookInboundTest {
      */
     public HookVerification verify(HookRequest request, List<String> secrets) {
       throw new HookException('boom');
+    }
+  }
+
+  private static String sha256(String text) {
+    return EncodingUtil.convertToHex(
+      Crypto.generateDigest('SHA-256', Blob.valueOf(text))
+    );
+  }
+
+  @IsTest
+  static void aReplayWithANewUnsignedIdIsADuplicate() {
+    setUp();
+    post('gh', (String) github.get('body'), githubHeaders('d-1'));
+    HookResponse replay = post(
+      'gh',
+      (String) github.get('body'),
+      githubHeaders('d-2')
+    );
+    Assert.areEqual('duplicate', parsed(replay).get('status'));
+    Assert.areEqual(1, [SELECT COUNT() FROM Hook_Inbound_Event__c]);
+  }
+
+  @IsTest
+  static void anUnsignedIdCannotBlockALaterEvent() {
+    setUp();
+    Hook_Endpoint__mdt ep = HookEndpoints.overrides.get('gh');
+    ep.Scheme__c = 'NONE';
+    ep.Event_Id_Header__c = 'X-Id';
+    post('gh', '{"n":1}', new Map<String, String>{ 'X-Id' => 'evt-5' });
+    HookResponse later = post(
+      'gh',
+      '{"n":2}',
+      new Map<String, String>{ 'X-Id' => 'evt-5' }
+    );
+    Assert.areEqual('accepted', parsed(later).get('status'));
+  }
+
+  @IsTest
+  static void aSignedIdIsTheDedupKey() {
+    Map<String, Object> v = HookTestSupport.vector('stripe');
+    HookTestSupport.settings();
+    HookTestSupport.endpoint('stripe', 'STRIPE');
+    HookTestSupport.secret(
+      HookTestSupport.SECRET_NAME,
+      (String) v.get('secret')
+    );
+    HookClock.fixedSeconds = Long.valueOf(String.valueOf(v.get('timestamp')));
+    post(
+      'stripe',
+      (String) v.get('body'),
+      new Map<String, String>{ 'Stripe-Signature' => (String) v.get('header') }
+    );
+    Assert.areEqual(
+      'stripe:evt_1',
+      [SELECT Dedup_Key__c FROM Hook_Inbound_Event__c].Dedup_Key__c
+    );
+  }
+
+  @IsTest
+  static void aGuestCannotUseAnEndpointWithNoCheck() {
+    setUp();
+    HookEndpoints.overrides.get('gh').Scheme__c = 'NONE';
+    HookInbound.guestOverride = true;
+    HookResponse res = post('gh', '{}', new Map<String, String>());
+    Assert.areEqual(401, res.statusCode);
+    Assert.areEqual(0, [SELECT COUNT() FROM Hook_Inbound_Event__c]);
+  }
+
+  @IsTest
+  static void a401GivesNoReason() {
+    setUp();
+    HookResponse res = post('gh', '{}', new Map<String, String>());
+    Assert.areEqual(401, res.statusCode);
+    Assert.areEqual('unauthorized', parsed(res).get('error'));
+  }
+
+  @IsTest
+  static void theTokenHeaderIsNotStored() {
+    setUp();
+    Hook_Endpoint__mdt ep = HookEndpoints.overrides.get('gh');
+    ep.Scheme__c = 'TOKEN';
+    ep.Signature_Header__c = 'X-Gitlab-Token';
+    HookTestSupport.secret('tok', 'gl-secret');
+    ep.Secret_Names__c = 'tok';
+    post(
+      'gh',
+      '{}',
+      new Map<String, String>{
+        'X-Gitlab-Token' => 'gl-secret',
+        'X-Api-Key' => 'k-1'
+      }
+    );
+    String headers = [SELECT Headers__c FROM Hook_Inbound_Event__c].Headers__c;
+    Assert.isFalse(headers.contains('gl-secret'), headers);
+    Assert.isFalse(headers.contains('k-1'), headers);
+  }
+
+  @IsTest
+  static void aBadHandlerIsNotMadeBeforeVerification() {
+    setUp();
+    HookEndpoints.overrides.get('gh')
+      .Handler_Class__c = 'HookInboundTest.CountingHandler';
+    made = 0;
+    post('gh', '{}', new Map<String, String>());
+    Assert.areEqual(
+      0,
+      made,
+      'a request that fails verification makes no handler'
+    );
+  }
+
+  /**
+   * @description Counts its constructions.
+   */
+  public class CountingHandler implements HookInboundHandler {
+    /**
+     * @description Counts.
+     */
+    public CountingHandler() {
+      made++;
+    }
+
+    /**
+     * @description Does nothing.
+     * @param event The event.
+     */
+    public void handle(HookInboundEvent event) {
+      return;
+    }
+  }
+
+  /** @description Constructions of CountingHandler. */
+  public static Integer made = 0;
+
+  @IsTest
+  static void anOldTimestampGives401() {
+    Map<String, Object> v = HookTestSupport.vector('stripe');
+    HookTestSupport.settings();
+    HookTestSupport.endpoint('stripe', 'STRIPE');
+    HookTestSupport.secret(
+      HookTestSupport.SECRET_NAME,
+      (String) v.get('secret')
+    );
+    HookClock.fixedSeconds =
+      Long.valueOf(String.valueOf(v.get('timestamp'))) + 301;
+    HookResponse res = post(
+      'stripe',
+      (String) v.get('body'),
+      new Map<String, String>{ 'Stripe-Signature' => (String) v.get('header') }
+    );
+    Assert.areEqual(401, res.statusCode, 'the default tolerance is 300 s');
+  }
+
+  @IsTest
+  static void aGetUsesTheVerifierHandshake() {
+    setUp();
+    HookEndpoints.overrides.get('gh')
+      .Verifier_Class__c = 'HookInboundTest.ChallengeVerifier';
+    HookRequest get = new HookRequest(
+      'GET',
+      'gh',
+      null,
+      new Map<String, String>(),
+      new Map<String, String>{ 'challenge' => 'c-1' },
+      null
+    );
+    HookResponse res = HookInbound.receive(get);
+    Assert.areEqual(200, res.statusCode);
+    Assert.areEqual('c-1', res.body);
+  }
+
+  @IsTest
+  static void anErrorAfterDmlRollsBack() {
+    setUp();
+    HookEndpoints.overrides.get('gh')
+      .Verifier_Class__c = 'HookInboundTest.DmlThenThrowVerifier';
+    HookResponse res = post('gh', '{}', new Map<String, String>());
+    Assert.areEqual(500, res.statusCode);
+    Assert.areEqual(
+      0,
+      [SELECT COUNT() FROM Hook_Secret__c WHERE Name = 'from_verifier']
+    );
+  }
+
+  /**
+   * @description A verifier with a GET challenge.
+   */
+  public class ChallengeVerifier implements HookVerifier, HookHandshake {
+    /**
+     * @description Accepts.
+     * @param request The request.
+     * @param secrets The secrets.
+     * @return A valid result.
+     */
+    public HookVerification verify(HookRequest request, List<String> secrets) {
+      return HookVerification.valid(null, null);
+    }
+
+    /**
+     * @description Echoes the challenge parameter.
+     * @param request The request.
+     * @param secrets The secrets.
+     * @return The challenge, or null.
+     */
+    public HookResponse respond(HookRequest request, List<String> secrets) {
+      return request.param('challenge') == null
+        ? null
+        : new HookResponse(200, request.param('challenge'), 'text/plain');
+    }
+  }
+
+  /**
+   * @description A verifier that does DML, then throws.
+   */
+  public class DmlThenThrowVerifier implements HookVerifier {
+    /**
+     * @description Inserts, then throws.
+     * @param request The request.
+     * @param secrets The secrets.
+     * @return Never.
+     */
+    public HookVerification verify(HookRequest request, List<String> secrets) {
+      insert new Hook_Secret__c(Name = 'from_verifier', Value__c = 'x');
+      throw new HookException('after DML');
     }
   }
 }

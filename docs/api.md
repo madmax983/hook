@@ -119,6 +119,6 @@ global class HookReplayAction
 
 ## Notes
 
-- `HookDelivery.Outcome.kind` is one of `DELIVERED`, `RETRY`, `GONE`, `CONFIG`.
-- `HookDelivery.Attempt.record(nextAttemptAt)`: a delivered outcome sets `Delivered`. Else a non-null time sets `Retrying`, and null sets `Failed`.
+- `HookDelivery.Outcome.kind` is one of `DELIVERED`, `RETRY`, `GONE`, `CONFIG`, `PAUSED`. `PAUSED`: the subscription is not active.
+- `HookDelivery.Attempt.record(nextAttemptAt)`: call it after `send()`. `DELIVERED` sets `Delivered`. `RETRY` with a time sets `Retrying`, and with null sets `Failed`. `GONE` and `CONFIG` set `Failed`. `PAUSED` sets `Pending` and counts no attempt. With no `send()`, it does nothing. It writes nothing when another job or a redelivery took the row after `prepare()`.
 - `HookFlowHandler`, `HookQueueChannel` and the Revenant adapter classes are `public`. Configuration names them. Code does not call them.

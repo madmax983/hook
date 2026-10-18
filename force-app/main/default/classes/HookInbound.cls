@@ -12,8 +12,13 @@ public without sharing class HookInbound {
   private static final Set<String> SECRET_HEADERS = new Set<String>{
     'authorization',
     'cookie',
-    'proxy-authorization'
+    'proxy-authorization',
+    'x-api-key'
   };
+
+  /** @description Tests set it to act as the Site guest user. */
+  @TestVisible
+  private static Boolean guestOverride;
 
   /**
    * @description Handles a request. It returns 500 for an unexpected error, so the provider retries.
@@ -51,28 +56,49 @@ public without sharing class HookInbound {
     }
     List<String> secrets = HookSecrets.valuesFor(ep.Secret_Names__c);
     HookVerifier verifier = HookVerifiers.forEndpoint(ep);
-    Object handler = handlerOrNull(ep);
     if (request.method == 'GET') {
       HookResponse answer = handshake(
-        new List<Object>{ verifier, handler },
+        new List<Object>{ verifier, handlerOrNull(ep) },
         request,
         secrets
       );
       return answer != null ? answer : error(405, 'method not allowed');
     }
+    if (verifier instanceof HookVerifiers.NoCheck && isGuest()) {
+      return unauthorized('The scheme NONE is not allowed for the guest user.');
+    }
     HookVerification verification = verifier.verify(request, secrets);
     if (verification == null || verification.isValid != true) {
-      return error(
-        401,
+      return unauthorized(
         verification == null ? 'not verified' : verification.reason
       );
     }
+    // Make the handler only after a valid verification.
     HookResponse answer = handshake(
-      new List<Object>{ verifier, handler },
+      new List<Object>{ verifier, handlerOrNull(ep) },
       request,
       secrets
     );
-    return answer != null ? answer : store(ep, request, verification);
+    return answer != null
+      ? answer
+      : store(ep, request, verification, HookVerifiers.signsEventId(verifier));
+  }
+
+  private static Boolean isGuest() {
+    return guestOverride != null
+      ? guestOverride
+      : UserInfo.getUserType() == 'Guest';
+  }
+
+  // Gives 401 with no detail. The reason goes to the debug log.
+  private static HookResponse unauthorized(String reason) {
+    logReason(reason);
+    return error(401, 'unauthorized');
+  }
+
+  @SuppressWarnings('PMD.AvoidDebugStatements')
+  private static void logReason(String reason) {
+    System.debug(LoggingLevel.WARN, 'Hook inbound 401: ' + reason);
   }
 
   // Gives 413 or 400 for a body that Hook cannot store, else null.
@@ -117,21 +143,28 @@ public without sharing class HookInbound {
     return null;
   }
 
+  // The dedup key uses only a signed value: an Id that the verifier signs, or
+  // a path in the signed body, or the body hash. An unsigned header Id cannot
+  // make a replay new, and cannot block a later event.
   private static HookResponse store(
     Hook_Endpoint__mdt ep,
     HookRequest request,
-    HookVerification v
+    HookVerification v,
+    Boolean idIsSigned
   ) {
+    String pathId = HookJson.textAt(request.body, ep.Event_Id_Path__c);
+    String bodyHash = sha256(request.bodyBlob);
+    String signedId = firstNonBlank(
+      new List<String>{ idIsSigned ? v.eventId : null, pathId, bodyHash }
+    );
     String eventId = firstNonBlank(
       new List<String>{
         v.eventId,
         request.header(ep.Event_Id_Header__c),
-        HookJson.textAt(request.body, ep.Event_Id_Path__c)
+        pathId,
+        bodyHash
       }
     );
-    if (eventId == null) {
-      eventId = sha256(request.bodyBlob);
-    }
     String eventType = firstNonBlank(
       new List<String>{
         v.eventType,
@@ -140,9 +173,9 @@ public without sharing class HookInbound {
       }
     );
     String name = ep.DeveloperName;
-    String dedupKey = name + ':' + eventId;
+    String dedupKey = name + ':' + signedId;
     if (dedupKey.length() > MAX_KEY) {
-      dedupKey = name + ':' + sha256(Blob.valueOf(eventId));
+      dedupKey = name + ':' + sha256(Blob.valueOf(signedId));
     }
     Hook_Inbound_Event__c rec = new Hook_Inbound_Event__c(
       Endpoint__c = name,
@@ -150,10 +183,11 @@ public without sharing class HookInbound {
       Event_Type__c = eventType == null ? null : eventType.left(MAX_KEY),
       Dedup_Key__c = dedupKey,
       Body__c = request.body,
-      Headers__c = storedHeaders(request),
+      Headers__c = storedHeaders(request, ep),
       Status__c = 'Pending',
       Attempts__c = 0,
-      Received_At__c = HookClock.now()
+      Received_At__c = HookClock.now(),
+      Dispatched_At__c = HookClock.now()
     );
     Database.SaveResult saved = Database.insert(
       rec,
@@ -174,7 +208,14 @@ public without sharing class HookInbound {
         'Hook could not store the event: ' + saved.getErrors()[0].getMessage()
       );
     }
-    HookInboundDispatcher.publish(new List<Id>{ saved.getId() });
+    HookInboundDispatcher.publish(new List<Hook_Inbound_Event__c>{ rec });
+    if (rec.Dispatched_At__c == null) {
+      // The publish failed. The sweep publishes the row again.
+      update as system new Hook_Inbound_Event__c(
+        Id = rec.Id,
+        Dispatched_At__c = null
+      );
+    }
     return HookResponse.ofJson(
       200,
       new Map<String, Object>{
@@ -198,10 +239,17 @@ public without sharing class HookInbound {
     return false;
   }
 
-  private static String storedHeaders(HookRequest request) {
+  private static String storedHeaders(
+    HookRequest request,
+    Hook_Endpoint__mdt ep
+  ) {
     Map<String, String> kept = request.headers();
     for (String name : SECRET_HEADERS) {
       kept.remove(name);
+    }
+    // The TOKEN scheme sends the secret itself in this header.
+    if (String.isNotBlank(ep.Signature_Header__c)) {
+      kept.remove(ep.Signature_Header__c.trim().toLowerCase());
     }
     return JSON.serialize(kept).left(32768);
   }

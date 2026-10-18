@@ -39,6 +39,7 @@ private class HookRevenantInboundHandlerTest {
     );
     Test.startTest();
     HookInboundDispatcher.dispatch(new Set<Id>{ rec.Id });
+    Hook.replayInbound(new Set<Id>{ rec.Id });
     HookInboundDispatcher.dispatch(new Set<Id>{ rec.Id });
     Test.stopTest();
 
@@ -48,8 +49,16 @@ private class HookRevenantInboundHandlerTest {
       FROM Workflow_Instance__c
       WHERE Workflow_Name__c = 'HookRevenantInboundHandlerTest.EchoWorkflow'
     ];
-    Assert.areEqual(1, rows.size());
+    Assert.areEqual(1, rows.size(), 'Revenant deduplicates the second start');
     Assert.areEqual('rv:evt_9', rows[0].Correlation_Key__c);
+    Map<String, Object> input = (Map<String, Object>) JSON.deserializeUntyped(
+      rows[0].Input__c
+    );
+    Assert.areEqual('evt_9', input.get('eventId'));
+    Assert.areEqual(
+      5,
+      ((Map<String, Object>) input.get('payload')).get('amount')
+    );
   }
 
   @IsTest
@@ -78,12 +87,77 @@ private class HookRevenantInboundHandlerTest {
 
     Assert.areEqual('Processed', status(rec.Id));
     Workflow_Signal__c sig = [
-      SELECT Signal_Name__c, Idempotency_Key__c, Payload__c
+      SELECT Signal_Name__c, Signal_Key__c
       FROM Workflow_Signal__c
       WHERE Workflow_Instance__c = :instanceId
     ];
     Assert.areEqual('Paid', sig.Signal_Name__c);
-    Assert.areEqual('rv:evt_9', sig.Idempotency_Key__c);
+    Assert.isNotNull(
+      sig.Signal_Key__c,
+      'Revenant keeps the dedup key as a hash'
+    );
+
+    Hook.replayInbound(new Set<Id>{ rec.Id });
+    HookInboundDispatcher.dispatch(new Set<Id>{ rec.Id });
+    Assert.areEqual(
+      1,
+      [
+        SELECT COUNT()
+        FROM Workflow_Signal__c
+        WHERE Workflow_Instance__c = :instanceId
+      ],
+      'the same dedup key signals one time'
+    );
+  }
+
+  @IsTest
+  static void signalModeNeedsARunningTarget() {
+    Hook_Inbound_Event__c rec = store(
+      '{"mode":"signal","signal":"Paid","keyPath":"data.orderKey"}',
+      '{"data":{"orderKey":"nobody"}}'
+    );
+    HookInboundDispatcher.dispatch(new Set<Id>{ rec.Id });
+    Hook_Inbound_Event__c after = [
+      SELECT Status__c, Last_Error__c
+      FROM Hook_Inbound_Event__c
+    ];
+    Assert.areEqual('Retrying', after.Status__c);
+    Assert.isTrue(after.Last_Error__c.contains('nobody'), after.Last_Error__c);
+  }
+
+  @IsTest
+  static void aLongKeyIsHashed() {
+    String longKey = 'k'.repeat(250);
+    Hook_Inbound_Event__c rec = store(
+      '{"mode":"start","workflow":"HookRevenantInboundHandlerTest.EchoWorkflow","keyPath":"id"}',
+      '{"id":"' + longKey + '"}'
+    );
+    HookInboundDispatcher.dispatch(new Set<Id>{ rec.Id });
+    Assert.areEqual('Processed', status(rec.Id));
+    String hashed =
+      'sha256:' +
+      EncodingUtil.convertToHex(
+        Crypto.generateDigest('SHA-256', Blob.valueOf(longKey))
+      );
+    Assert.isNotNull(WorkflowStatusRead.getStatus(hashed));
+  }
+
+  @IsTest
+  static void aKeyOfAnotherWorkflowIsAnError() {
+    WorkflowEngine.start(
+      'HookRevenantInboundHandlerTest.OtherWorkflow',
+      'shared-1',
+      null
+    );
+    Hook_Inbound_Event__c rec = store(
+      '{"mode":"start","workflow":"HookRevenantInboundHandlerTest.EchoWorkflow","keyPath":"id"}',
+      '{"id":"shared-1"}'
+    );
+    HookInboundDispatcher.dispatch(new Set<Id>{ rec.Id });
+    Assert.isTrue(
+      [SELECT Last_Error__c FROM Hook_Inbound_Event__c]
+        .Last_Error__c.contains('OtherWorkflow')
+    );
   }
 
   @IsTest
@@ -156,6 +230,37 @@ private class HookRevenantInboundHandlerTest {
       return paid.isPresent()
         ? StepResult.complete(null, paid.payload)
         : StepResult.suspend();
+    }
+  }
+
+  /**
+   * @description Another workflow, for the key clash test.
+   */
+  public class OtherWorkflow implements WorkflowDefinition {
+    /**
+     * @description Lists the steps.
+     * @return The step names.
+     */
+    public List<String> getSteps() {
+      return new List<String>{ 'HookRevenantInboundHandlerTest.WaitStep' };
+    }
+
+    /**
+     * @description Names the first step.
+     * @return The wait step.
+     */
+    public String getInitialStep() {
+      return 'HookRevenantInboundHandlerTest.WaitStep';
+    }
+
+    /**
+     * @description Ends after the wait step.
+     * @param currentStepName The step that completed.
+     * @param result The result.
+     * @return Null.
+     */
+    public String getNextStep(String currentStepName, StepResult result) {
+      return null;
     }
   }
 }

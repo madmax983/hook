@@ -40,13 +40,17 @@ public inherited sharing class HookSecrets {
   }
 
   /**
-   * @description Sets the current value of a secret. It makes the record when it is missing.
+   * @description Sets the current value of a secret. It makes the record when
+   * it is missing. It removes the previous value at once, so use it to revoke
+   * a leaked secret. To change a secret with no downtime, use rotate().
    * @param name The secret name.
    * @param value The value.
    */
   public static void put(String name, String value) {
     Hook_Secret__c rec = load(name);
     rec.Value__c = value;
+    rec.Previous_Value__c = null;
+    rec.Previous_Expires_At__c = null;
     upsert as system rec;
   }
 

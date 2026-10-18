@@ -503,4 +503,65 @@ private class HookDispatchJobTest {
       return result;
     }
   }
+
+  @IsTest
+  static void aRowWithAShortLeaseWaitsForTheNextClaim() {
+    HookTestSupport.settings();
+    Hook_Delivery__c d = claimed();
+    d.Lease_Until__c = Datetime.now().addSeconds(60);
+    update d;
+    Test.setMock(
+      HttpCalloutMock.class,
+      new HookTestSupport.MockHttp().add(200, '', null)
+    );
+    Test.startTest();
+    runToken('tok');
+    Assert.areEqual(
+      0,
+      HookTestSupport.requests.size(),
+      'no send near the end of the lease'
+    );
+    Assert.areEqual(
+      1,
+      HookAsync.deferred.size(),
+      'the next job claims it with a new lease'
+    );
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void aSendInsertsClaimedRowsWithOneStatement() {
+    HookTestSupport.settings();
+    HookTestSupport.subscription('s', '*');
+    Integer before = Limits.getDmlStatements();
+    Hook.send('order.paid', null);
+    Assert.areEqual(1, Limits.getDmlStatements() - before);
+    Hook_Delivery__c d = [
+      SELECT Status__c, Claim_Token__c, Lease_Until__c
+      FROM Hook_Delivery__c
+    ];
+    Assert.areEqual('In_Flight', d.Status__c);
+    Assert.isNotNull(d.Claim_Token__c);
+    Assert.isNotNull(d.Lease_Until__c);
+  }
+
+  @IsTest
+  static void retryAfterOn503IsUsedAndCapped() {
+    HookTestSupport.settings().Max_Delay_Seconds__c = 100;
+    HookClock.fixedSeconds = 1700000000L;
+    Hook_Delivery__c d = claimed();
+    Test.setMock(
+      HttpCalloutMock.class,
+      new HookTestSupport.MockHttp()
+        .add(503, '', new Map<String, String>{ 'Retry-After' => '7200' })
+    );
+    Test.startTest();
+    runToken('tok');
+    Test.stopTest();
+    Assert.areEqual(
+      Datetime.newInstance(1700000100000L),
+      HookTestSupport.reload(d.Id).Next_Attempt_At__c,
+      'Retry-After is capped by Max_Delay_Seconds__c'
+    );
+  }
 }

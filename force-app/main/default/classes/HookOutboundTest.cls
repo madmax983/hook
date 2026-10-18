@@ -80,9 +80,14 @@ private class HookOutboundTest {
   static void theSameEventIdTwiceMakesOneDelivery() {
     HookTestSupport.settings();
     HookTestSupport.subscription('all', '*');
+    HookTestSupport.subscription('orders', 'order.*');
     Hook.send('order.paid', null, 'evt_1');
     Hook.send('order.paid', null, 'evt_1');
-    Assert.areEqual(1, [SELECT COUNT() FROM Hook_Delivery__c]);
+    Assert.areEqual(
+      2,
+      [SELECT COUNT() FROM Hook_Delivery__c],
+      'one for each subscription'
+    );
   }
 
   @IsTest

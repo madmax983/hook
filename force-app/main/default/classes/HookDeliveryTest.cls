@@ -75,15 +75,103 @@ private class HookDeliveryTest {
   }
 
   @IsTest
-  static void anInactiveSubscriptionGivesAConfigOutcome() {
+  static void anInactiveSubscriptionPausesTheRow() {
+    HookTestSupport.settings();
+    Hook_Subscription__c sub = HookTestSupport.subscription('s', '*');
+    Hook_Delivery__c d = HookTestSupport.delivery(sub, 'In_Flight');
+    d.Claim_Token__c = 'tok';
+    update d;
+    sub.Active__c = false;
+    update sub;
+    HookDelivery.Attempt attempt = HookDelivery.prepare(d.Id);
+    HookDelivery.Outcome outcome = attempt.send();
+    Assert.areEqual('PAUSED', outcome.kind);
+    Assert.isFalse(outcome.isRetryable());
+    attempt.record(null);
+    Hook_Delivery__c after = HookTestSupport.reload(d.Id);
+    Assert.areEqual(
+      'Pending',
+      after.Status__c,
+      'the row waits for the subscription'
+    );
+    Assert.areEqual(0, after.Attempts__c, 'a pause is not an attempt');
+    Assert.isNull(after.Claim_Token__c);
+  }
+
+  @IsTest
+  static void recordSkipsARowThatWasRedeliveredAfterTheRead() {
     HookTestSupport.settings();
     Hook_Subscription__c sub = HookTestSupport.subscription('s', '*');
     Hook_Delivery__c d = HookTestSupport.delivery(sub, 'Pending');
-    sub.Active__c = false;
-    update sub;
+    Test.setMock(
+      HttpCalloutMock.class,
+      new HookTestSupport.MockHttp().add(500, '', null)
+    );
+    Test.startTest();
+    HookDelivery.Attempt attempt = HookDelivery.prepare(d.Id);
+    attempt.send();
+    update new Hook_Delivery__c(
+      Id = d.Id,
+      Generation__c = 1,
+      Status__c = 'Pending'
+    );
+    attempt.record(null);
+    Test.stopTest();
+    Hook_Delivery__c after = HookTestSupport.reload(d.Id);
+    Assert.areEqual('Pending', after.Status__c, 'the redelivery wins');
+    Assert.areEqual(0, after.Attempts__c);
+  }
+
+  @IsTest
+  static void recordDoesNotEnableADisabledSubscription() {
+    HookTestSupport.settings();
+    Hook_Subscription__c sub = HookTestSupport.subscription('s', '*');
+    Hook_Delivery__c d = HookTestSupport.delivery(sub, 'Pending');
+    Test.setMock(
+      HttpCalloutMock.class,
+      new HookTestSupport.MockHttp().add(200, '', null)
+    );
+    Test.startTest();
+    HookDelivery.Attempt attempt = HookDelivery.prepare(d.Id);
+    attempt.send();
+    update new Hook_Subscription__c(
+      Id = sub.Id,
+      Active__c = false,
+      Disabled_Reason__c = 'admin'
+    );
+    attempt.record(null);
+    Test.stopTest();
+    Hook_Subscription__c after = [
+      SELECT Active__c, Disabled_Reason__c
+      FROM Hook_Subscription__c
+    ];
+    Assert.isFalse(after.Active__c);
+    Assert.areEqual('admin', after.Disabled_Reason__c);
+  }
+
+  @IsTest
+  static void anErrorThatIsNotACalloutErrorGivesAConfigOutcome() {
+    HookTestSupport.settings();
+    Hook_Subscription__c sub = HookTestSupport.subscription('s', '*');
+    Hook_Delivery__c d = HookTestSupport.delivery(sub, 'Pending');
+    HookDelivery.transport = new BrokenTransport();
     HookDelivery.Outcome outcome = HookDelivery.prepare(d.Id).send();
     Assert.areEqual('CONFIG', outcome.kind);
-    Assert.isTrue(outcome.error.contains('not active'), outcome.error);
+    Assert.isTrue(outcome.error.contains('could not send'), outcome.error);
+  }
+
+  /**
+   * @description A transport that fails with an error that is not a CalloutException.
+   */
+  private class BrokenTransport implements HookTransport {
+    /**
+     * @description Throws.
+     * @param req The request.
+     * @return Never.
+     */
+    public HttpResponse send(HttpRequest req) {
+      throw new HookException('broken');
+    }
   }
 
   @IsTest

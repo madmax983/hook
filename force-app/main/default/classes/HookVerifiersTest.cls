@@ -384,4 +384,53 @@ private class HookVerifiersTest {
       return HookVerification.valid('custom-id', 'custom.type');
     }
   }
+
+  @IsTest
+  static void tokenUsesAuthorizationByDefault() {
+    Hook_Endpoint__mdt ep = HookTestSupport.endpoint('token', 'TOKEN');
+    Assert.isTrue(
+      run(
+          ep,
+          '{}',
+          new Map<String, String>{ 'Authorization' => 's3cret' },
+          one('s3cret')
+        )
+        .isValid
+    );
+  }
+
+  @IsTest
+  static void theSignatureCoversTheRawBytes() {
+    Hook_Endpoint__mdt ep = HookTestSupport.endpoint('generic', 'HMAC_SHA256');
+    ep.Signature_Header__c = 'X-Signature';
+    String raw = '{ "a" :  1 }';
+    String hex = EncodingUtil.convertToHex(
+      Crypto.generateMac('hmacSHA256', Blob.valueOf(raw), Blob.valueOf('k'))
+    );
+    Map<String, String> headers = new Map<String, String>{
+      'X-Signature' => hex
+    };
+    Assert.isTrue(run(ep, raw, headers, one('k')).isValid, 'the bytes as sent');
+    String reserialized = JSON.serialize(JSON.deserializeUntyped(raw));
+    Assert.isFalse(
+      run(ep, reserialized, headers, one('k')).isValid,
+      'not a new serialization'
+    );
+  }
+
+  @IsTest
+  static void aBadTimestampIsInvalidAndDoesNotThrow() {
+    HookClock.fixedSeconds = 1700000000L;
+    Hook_Endpoint__mdt ep = HookTestSupport.endpoint('slack', 'SLACK');
+    HookVerification v = run(
+      ep,
+      '{}',
+      new Map<String, String>{
+        'X-Slack-Request-Timestamp' => '9'.repeat(25),
+        'X-Slack-Signature' => 'v0=00'
+      },
+      one('s')
+    );
+    Assert.isFalse(v.isValid);
+  }
 }

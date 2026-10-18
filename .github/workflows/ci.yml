@@ -69,6 +69,10 @@ jobs:
         env:
           REQUIRE_APEX_LS: "1"
           REQUIRE_SUBMODULES: "1"
+      - name: Compile the core alone (no Revenant)
+        run: npm run check:apex-compile:core
+        env:
+          REQUIRE_APEX_LS: "1"
 
   code-analyzer:
     name: Code Analyzer

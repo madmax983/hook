@@ -2,8 +2,8 @@
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>Event_Types__c</fullName>
     <label>Event Types</label>
-    <description>Event types to send, separated by commas or semicolons. Use * for all, or a prefix such as order.*.</description>
-    <inlineHelpText>Event types to send, separated by commas or semicolons. Use * for all, or a prefix such as order.*.</inlineHelpText>
+    <description>Event types to send, separated by commas, semicolons or spaces. Use * for all, or a prefix such as order.*.</description>
+    <inlineHelpText>Event types to send, separated by commas, semicolons or spaces. Use * for all, or a prefix such as order.*.</inlineHelpText>
     <type>Text</type>
     <length>255</length>
     <required>false</required>

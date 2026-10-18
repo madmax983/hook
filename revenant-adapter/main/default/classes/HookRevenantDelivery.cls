@@ -9,8 +9,11 @@ public inherited sharing class HookRevenantDelivery {
   public static final String STEP = 'HookRevenantDelivery.DeliverStep';
   /** @description First retry delay, in seconds. It doubles each attempt. */
   public static final Integer BASE_DELAY_SECONDS = 60;
-  /** @description Attempts for a thrown error, for example a DML error in record(). */
-  public static final Integer THROWN_ERROR_ATTEMPTS = 3;
+  /**
+   * @description Attempts for a thrown error. Revenant counts them with the
+   * HTTP retries, so it is equal to the Hook default.
+   */
+  public static final Integer THROWN_ERROR_ATTEMPTS = 10;
 
   /**
    * @description The workflow: DeliverStep only.
@@ -46,7 +49,9 @@ public inherited sharing class HookRevenantDelivery {
   /**
    * @description Sends the delivery. CalloutStep: Revenant does no DML before
    * execute(), so the callout is legal. The Hook attempt count and the
-   * Revenant final attempt both end the retries.
+   * Revenant final attempt both end the retries. When the subscription is not
+   * active, the row goes back to Pending and the workflow fails. Redeliver
+   * the row after you make the subscription active again.
    */
   public class DeliverStep implements WorkflowStep, CalloutStep, AutoRetryConfigurable {
     /**
@@ -55,13 +60,10 @@ public inherited sharing class HookRevenantDelivery {
      * @return COMPLETE for 2xx, SLEEP for Retry-After, RETRY, or FAIL.
      */
     public StepResult execute(StepContext ctx) {
-      Object raw = HookJson.valueAt(
-        HookJson.parse(ctx.workflowInputJson),
-        'deliveryId'
-      );
-      HookDelivery.Attempt attempt = raw == null
+      Id deliveryId = deliveryIdFrom(ctx.workflowInputJson);
+      HookDelivery.Attempt attempt = deliveryId == null
         ? null
-        : HookDelivery.prepare(Id.valueOf(String.valueOf(raw)));
+        : HookDelivery.prepare(deliveryId);
       if (attempt == null) {
         return StepResult.fail('The Hook delivery is not found.');
       }
@@ -72,6 +74,20 @@ public inherited sharing class HookRevenantDelivery {
         );
       }
       HookDelivery.Outcome outcome = attempt.send();
+      try {
+        return decide(ctx, attempt, outcome);
+      } catch (Exception e) {
+        // The callout is done, but record() failed, for example on a lock.
+        // A retry sends again with the same webhook-id. The receiver deduplicates.
+        return StepResult.retry(policy(attempt));
+      }
+    }
+
+    private StepResult decide(
+      StepContext ctx,
+      HookDelivery.Attempt attempt,
+      HookDelivery.Outcome outcome
+    ) {
       if (outcome.isDelivered()) {
         attempt.record(null);
         return StepResult.complete(
@@ -88,24 +104,46 @@ public inherited sharing class HookRevenantDelivery {
         return StepResult.fail('Hook delivery failed: ' + outcome.error);
       }
       if (outcome.retryAfterSeconds != null) {
-        attempt.record(Datetime.now().addSeconds(outcome.retryAfterSeconds));
+        attempt.record(displayTime(outcome.retryAfterSeconds));
         return StepResult.sleep(outcome.retryAfterSeconds);
       }
+      Integer exponent = Math.min(Math.max(ctx.attempt, 1) - 1, 20);
       attempt.record(
-        Datetime.now()
-          .addSeconds(
-            BASE_DELAY_SECONDS *
-            (Integer) Math.pow(2, Math.min(attempt.attempts, 20))
-          )
+        displayTime(BASE_DELAY_SECONDS * (Integer) Math.pow(2, exponent))
       );
-      return StepResult.retry(
-        new RetryPolicy(BASE_DELAY_SECONDS, (Double) 2.0, attempt.maxAttempts)
+      return StepResult.retry(policy(attempt));
+    }
+
+    private RetryPolicy policy(HookDelivery.Attempt attempt) {
+      return new RetryPolicy(
+        BASE_DELAY_SECONDS,
+        (Double) 2.0,
+        attempt.maxAttempts
       );
+    }
+
+    // The time for Next_Attempt_At__c. Revenant owns the real wait; the row
+    // shows it. A replay does not read the value back.
+    private Datetime displayTime(Integer seconds) {
+      // revenant-lint-disable-next-line: display-only time, not read on replay
+      return Datetime.now().addSeconds(seconds);
+    }
+
+    private Id deliveryIdFrom(String inputJson) {
+      try {
+        Object parsed = JSON.deserializeUntyped(inputJson);
+        Object raw = parsed instanceof Map<String, Object>
+          ? ((Map<String, Object>) parsed).get('deliveryId')
+          : null;
+        return raw == null ? null : Id.valueOf(String.valueOf(raw));
+      } catch (Exception e) {
+        return null;
+      }
     }
 
     /**
      * @description Retry policy for a thrown error.
-     * @return Three attempts: 60 s, then 120 s.
+     * @return Ten attempts: 60 s, then doubled each time.
      */
     public RetryPolicy getAutoRetryPolicy() {
       return new RetryPolicy(

@@ -7,6 +7,8 @@ global without sharing class HookDelivery {
   /** @description Largest stored response body. */
   public static final Integer MAX_RESPONSE = 2000;
   private static final Integer MAX_TEXT = 32768;
+  /** @description Lease that a job needs: 120 s of callouts and a margin. */
+  private static final Integer LEASE_FLOOR_SECONDS = 130;
 
   /** @description Sends the request. Tests can replace it. */
   @TestVisible
@@ -44,6 +46,8 @@ global without sharing class HookDelivery {
           Attempts__c,
           Payload__c,
           Event_Id__c,
+          Claim_Token__c,
+          Generation__c,
           Subscription__c,
           Subscription__r.Endpoint__c,
           Subscription__r.Secret_Name__c,
@@ -65,6 +69,8 @@ global without sharing class HookDelivery {
    * @return The attempts.
    */
   public static List<Attempt> claimed(String token, Integer max) {
+    // A row with less lease than one job of callouts stays for the next claim.
+    Datetime leaseFloor = HookClock.now().addSeconds(LEASE_FLOOR_SECONDS);
     return wrap(
       [
         SELECT
@@ -73,6 +79,8 @@ global without sharing class HookDelivery {
           Attempts__c,
           Payload__c,
           Event_Id__c,
+          Claim_Token__c,
+          Generation__c,
           Subscription__c,
           Subscription__r.Endpoint__c,
           Subscription__r.Secret_Name__c,
@@ -80,7 +88,10 @@ global without sharing class HookDelivery {
           Subscription__r.Active__c,
           Subscription__r.Consecutive_Failures__c
         FROM Hook_Delivery__c
-        WHERE Claim_Token__c = :token AND Status__c = 'In_Flight'
+        WHERE
+          Claim_Token__c = :token
+          AND Status__c = 'In_Flight'
+          AND Lease_Until__c > :leaseFloor
         WITH SYSTEM_MODE
         LIMIT :max
       ]
@@ -97,35 +108,62 @@ global without sharing class HookDelivery {
 
   /**
    * @description Writes the result of each sent attempt and updates the
-   * failure count of each subscription.
+   * failure count of each subscription. It reads the rows and the
+   * subscriptions again with a lock. It skips a row that another job or a
+   * redelivery took after the read, and it changes Active__c only to disable.
    * @param attempts The attempts. An attempt with no outcome is skipped.
    */
   public static void saveAll(List<Attempt> attempts) {
+    Set<Id> rowIds = new Set<Id>();
+    Set<Id> subIds = new Set<Id>();
+    for (Attempt a : attempts) {
+      if (a.outcome != null) {
+        rowIds.add(a.deliveryId);
+        subIds.add(a.row.Subscription__c);
+      }
+    }
+    if (rowIds.isEmpty()) {
+      return;
+    }
+    Map<Id, Hook_Delivery__c> fresh = new Map<Id, Hook_Delivery__c>(
+      [
+        SELECT Id, Claim_Token__c, Generation__c
+        FROM Hook_Delivery__c
+        WHERE Id IN :rowIds
+        WITH SYSTEM_MODE
+        FOR UPDATE
+      ]
+    );
+    Map<Id, Hook_Subscription__c> subs = new Map<Id, Hook_Subscription__c>(
+      [
+        SELECT Id, Active__c, Consecutive_Failures__c, Disabled_Reason__c
+        FROM Hook_Subscription__c
+        WHERE Id IN :subIds
+        WITH SYSTEM_MODE
+        FOR UPDATE
+      ]
+    );
     Datetime now = HookClock.now();
     Integer disableAfter = HookConfig.disableAfterFailures();
-    Map<Id, Hook_Subscription__c> subs = new Map<Id, Hook_Subscription__c>();
     List<Hook_Delivery__c> rows = new List<Hook_Delivery__c>();
+    Map<Id, Hook_Subscription__c> changed = new Map<Id, Hook_Subscription__c>();
     for (Attempt a : attempts) {
-      if (a.outcome == null) {
+      Hook_Subscription__c sub = subs.get(a.row.Subscription__c);
+      if (
+        a.outcome == null ||
+        sub == null ||
+        !a.stillOwns(fresh.get(a.deliveryId))
+      ) {
         continue;
       }
-      Hook_Subscription__c sub = subs.get(a.row.Subscription__c);
-      if (sub == null) {
-        sub = new Hook_Subscription__c(
-          Id = a.row.Subscription__c,
-          Active__c = a.row.Subscription__r.Active__c,
-          Consecutive_Failures__c = a.row.Subscription__r.Consecutive_Failures__c ==
-            null
-            ? 0
-            : a.row.Subscription__r.Consecutive_Failures__c
-        );
-        subs.put(sub.Id, sub);
+      if (sub.Consecutive_Failures__c == null) {
+        sub.Consecutive_Failures__c = 0;
       }
-      a.apply(now, sub, disableAfter);
-      rows.add(a.row);
+      rows.add(a.apply(now, sub, disableAfter));
+      changed.put(sub.Id, sub);
     }
     update as system rows;
-    update as system subs.values();
+    update as system changed.values();
   }
 
   /**
@@ -224,7 +262,11 @@ global without sharing class HookDelivery {
      */
     global Outcome send() {
       if (row.Subscription__r.Active__c != true) {
-        outcome = configOutcome('The subscription is not active.');
+        outcome = new Outcome(
+          'PAUSED',
+          null,
+          'The subscription is not active.'
+        );
         return outcome;
       }
       List<String> secrets = HookSecrets.valuesFor(
@@ -238,6 +280,24 @@ global without sharing class HookDelivery {
         );
         return outcome;
       }
+      try {
+        outcome = outcomeOf(transport.send(request(secrets)));
+      } catch (CalloutException e) {
+        outcome = retryOutcome(
+          null,
+          null,
+          'CalloutException: ' + e.getMessage()
+        );
+      } catch (Exception e) {
+        // For example, a secret that is not valid base64. A retry cannot fix it.
+        outcome = configOutcome(
+          'Hook could not send: ' + e.getTypeName() + ': ' + e.getMessage()
+        );
+      }
+      return outcome;
+    }
+
+    private HttpRequest request(List<String> secrets) {
       Long ts = HookClock.nowSeconds();
       HttpRequest req = new HttpRequest();
       req.setEndpoint(row.Subscription__r.Endpoint__c);
@@ -252,16 +312,23 @@ global without sharing class HookDelivery {
         HookSigner.signatureHeader(secrets, row.Event_Id__c, ts, row.Payload__c)
       );
       req.setBody(row.Payload__c);
-      try {
-        outcome = outcomeOf(transport.send(req));
-      } catch (CalloutException e) {
-        outcome = retryOutcome(
-          null,
-          null,
-          'CalloutException: ' + e.getMessage()
-        );
-      }
-      return outcome;
+      return req;
+    }
+
+    /**
+     * @description Tells if this attempt still owns the row: the claim token
+     * and the generation did not change after the read.
+     * @param current The row as it is now, or null when it is deleted.
+     * @return True when the attempt can write the row.
+     */
+    public Boolean stillOwns(Hook_Delivery__c current) {
+      return current != null &&
+        same(current.Claim_Token__c, row.Claim_Token__c) &&
+        current.Generation__c == row.Generation__c;
+    }
+
+    private Boolean same(String a, String b) {
+      return a == null ? b == null : a.equals(b);
     }
 
     /**
@@ -280,39 +347,48 @@ global without sharing class HookDelivery {
      * @param sub The subscription to change.
      * @param disableAfter Failed attempts in a row that disable it. 0 is never.
      */
-    public void apply(
+    public Hook_Delivery__c apply(
       Datetime now,
       Hook_Subscription__c sub,
       Integer disableAfter
     ) {
-      row.Attempts__c = attempts + 1;
-      row.Last_Attempt_At__c = now;
-      row.Last_Status_Code__c = outcome.statusCode;
-      row.Last_Error__c = outcome.error == null
-        ? null
-        : outcome.error.left(MAX_TEXT);
-      row.Last_Response__c = outcome.responseBody;
-      row.Claim_Token__c = null;
-      row.Lease_Until__c = null;
-      row.Next_Attempt_At__c = null;
+      Hook_Delivery__c out = new Hook_Delivery__c(
+        Id = deliveryId,
+        Claim_Token__c = null,
+        Lease_Until__c = null,
+        Next_Attempt_At__c = null,
+        Last_Status_Code__c = outcome.statusCode,
+        Last_Error__c = outcome.error == null
+          ? null
+          : outcome.error.left(MAX_TEXT),
+        Last_Response__c = outcome.responseBody
+      );
+      if (outcome.kind == 'PAUSED') {
+        // Not an attempt. The row waits until the subscription is active again.
+        out.Status__c = 'Pending';
+        row.Status__c = out.Status__c;
+        return out;
+      }
+      out.Attempts__c = attempts + 1;
+      out.Last_Attempt_At__c = now;
       switch on outcome.kind {
         when 'DELIVERED' {
-          row.Status__c = 'Delivered';
-          row.Delivered_At__c = now;
+          out.Status__c = 'Delivered';
+          out.Delivered_At__c = now;
           sub.Consecutive_Failures__c = 0;
         }
         when 'GONE' {
-          row.Status__c = 'Failed';
+          out.Status__c = 'Failed';
           sub.Consecutive_Failures__c += 1;
           disable(sub, 'The endpoint returned HTTP 410 Gone.');
         }
         when 'RETRY' {
           sub.Consecutive_Failures__c += 1;
-          row.Status__c = nextAttemptAt == null ? 'Failed' : 'Retrying';
-          row.Next_Attempt_At__c = nextAttemptAt;
+          out.Status__c = nextAttemptAt == null ? 'Failed' : 'Retrying';
+          out.Next_Attempt_At__c = nextAttemptAt;
         }
         when else {
-          row.Status__c = 'Failed';
+          out.Status__c = 'Failed';
         }
       }
       if (disableAfter > 0 && sub.Consecutive_Failures__c >= disableAfter) {
@@ -323,6 +399,8 @@ global without sharing class HookDelivery {
             ' failed attempts in a row.'
         );
       }
+      row.Status__c = out.Status__c;
+      return out;
     }
 
     private void disable(Hook_Subscription__c sub, String reason) {
@@ -337,7 +415,7 @@ global without sharing class HookDelivery {
    * @description The result of one send.
    */
   global class Outcome {
-    /** @description DELIVERED, RETRY, GONE or CONFIG. */
+    /** @description DELIVERED, RETRY, GONE, CONFIG or PAUSED (the subscription is not active). */
     global String kind { get; private set; }
     /** @description The HTTP status, or null. */
     global Integer statusCode { get; private set; }

@@ -9,6 +9,9 @@ private class HookRevenantChannelTest {
     Hook_Subscription__c sub = HookTestSupport.subscription('s', '*');
     sub.Channel__c = 'HookRevenantChannel';
     update sub;
+    HookDelivery.transport = new HookTestSupport.FakeTransport(
+      new List<Integer>{ 200 }
+    );
 
     Test.startTest();
     Hook.send('order.paid', null, 'evt_a');
@@ -46,6 +49,9 @@ private class HookRevenantChannelTest {
     Hook_Delivery__c d = HookTestSupport.delivery(sub, 'Failed');
     d.Channel__c = 'HookRevenantChannel';
     update d;
+    HookDelivery.transport = new HookTestSupport.FakeTransport(
+      new List<Integer>{ 200 }
+    );
 
     Test.startTest();
     Hook.redeliver(new Set<Id>{ d.Id });

@@ -16,31 +16,60 @@ public without sharing class HookQueueChannel implements HookChannel {
    * @param deliveryIds The Hook_Delivery__c Ids.
    */
   public void dispatch(List<Id> deliveryIds) {
-    if (deliveryIds == null || deliveryIds.isEmpty()) {
+    if (deliveryIds == null || deliveryIds.isEmpty() || !canClaim()) {
       return;
     }
-    if (!enqueued && !HookAsync.canEnqueue()) {
-      return;
+    List<Hook_Delivery__c> rows = new List<Hook_Delivery__c>();
+    for (Id id : deliveryIds) {
+      Hook_Delivery__c d = new Hook_Delivery__c(Id = id);
+      stamp(d);
+      rows.add(d);
     }
+    update as system rows;
+    ensureJob();
+  }
+
+  private static Boolean canClaim() {
+    return enqueued || HookAsync.canEnqueue();
+  }
+
+  /**
+   * @description Claims a new row before its insert, so the insert needs no
+   * second DML. Call ensureJob() after the insert.
+   * @param row The new row.
+   */
+  public static void stampNew(Hook_Delivery__c row) {
+    if (canClaim()) {
+      stamp(row);
+    }
+  }
+
+  /**
+   * @description Tells if a row has the claim of this transaction.
+   * @param row The row.
+   * @return True when stampNew() or dispatch() claimed it.
+   */
+  public static Boolean isClaimedHere(Hook_Delivery__c row) {
+    return transactionToken != null &&
+      transactionToken.equals(row.Claim_Token__c);
+  }
+
+  /**
+   * @description Enqueues the job of this transaction one time.
+   */
+  public static void ensureJob() {
+    if (!enqueued && transactionToken != null) {
+      enqueued = HookAsync.enqueue(new HookDispatchJob(transactionToken), 0);
+    }
+  }
+
+  private static void stamp(Hook_Delivery__c row) {
     if (transactionToken == null) {
       transactionToken = newToken();
     }
-    Datetime lease = HookClock.now().addMinutes(HookConfig.leaseMinutes());
-    List<Hook_Delivery__c> rows = new List<Hook_Delivery__c>();
-    for (Id id : deliveryIds) {
-      rows.add(
-        new Hook_Delivery__c(
-          Id = id,
-          Status__c = 'In_Flight',
-          Claim_Token__c = transactionToken,
-          Lease_Until__c = lease
-        )
-      );
-    }
-    update as system rows;
-    if (!enqueued) {
-      enqueued = HookAsync.enqueue(new HookDispatchJob(transactionToken), 0);
-    }
+    row.Status__c = 'In_Flight';
+    row.Claim_Token__c = transactionToken;
+    row.Lease_Until__c = HookClock.now().addMinutes(HookConfig.leaseMinutes());
   }
 
   /**
@@ -104,6 +133,23 @@ public without sharing class HookQueueChannel implements HookChannel {
         WITH SYSTEM_MODE
         LIMIT 1
       ] > 0;
+  }
+
+  /**
+   * @description Gives the earliest retry time of a row that this channel can claim.
+   * @return The time, or null when no row waits for a retry.
+   */
+  public static Datetime nextRetryAt() {
+    AggregateResult[] rows = [
+      SELECT MIN(Next_Attempt_At__c) earliest
+      FROM Hook_Delivery__c
+      WHERE
+        Channel__c = :NAME
+        AND Subscription__r.Active__c = TRUE
+        AND Status__c = 'Retrying'
+      WITH SYSTEM_MODE
+    ];
+    return rows.isEmpty() ? null : (Datetime) rows[0].get('earliest');
   }
 
   private static String newToken() {

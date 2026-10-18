@@ -35,26 +35,34 @@ public without sharing class HookDispatchJob implements Queueable, Database.Allo
         claimAndChain(null);
         return;
       }
-      Integer shortest = sendClaimed();
-      if (
-        !claimAndChain(token) &&
-        shortest != null &&
-        shortest <= DELAYED_JOB_MAX_SECONDS
-      ) {
-        HookAsync.enqueue(
-          new HookDispatchJob(null),
-          Math.max(1, Math.ceil(shortest / 60.0).intValue())
-        );
+      sendClaimed();
+      if (!claimAndChain(token)) {
+        armTimer();
       }
     } finally {
       HookAsync.inJob = wasInJob;
     }
   }
 
-  // Sends the rows of the token. Gives the shortest retry delay, or null.
-  private Integer sendClaimed() {
+  // At the end of a chain: when the next retry of any row is due in 10
+  // minutes or less, a delayed claim job covers it. The sweep covers the rest.
+  private static void armTimer() {
+    Datetime next = HookQueueChannel.nextRetryAt();
+    if (next == null) {
+      return;
+    }
+    Long seconds = (next.getTime() - HookClock.now().getTime()) / 1000;
+    if (seconds <= DELAYED_JOB_MAX_SECONDS) {
+      HookAsync.enqueue(
+        new HookDispatchJob(null),
+        Math.max(1, Math.ceil(seconds / 60.0).intValue())
+      );
+    }
+  }
+
+  // Sends the rows of the token, then writes the results.
+  private void sendClaimed() {
     List<HookDelivery.Attempt> sent = new List<HookDelivery.Attempt>();
-    Integer shortest;
     for (
       HookDelivery.Attempt a : HookDelivery.claimed(
         token,
@@ -68,12 +76,10 @@ public without sharing class HookDispatchJob implements Queueable, Database.Allo
       Integer delay = retryDelay(a, outcome);
       if (delay != null) {
         a.nextAttemptAt = HookClock.now().addSeconds(delay);
-        shortest = shortest == null ? delay : Math.min(shortest, delay);
       }
       sent.add(a);
     }
     HookDelivery.saveAll(sent);
-    return shortest;
   }
 
   /**
@@ -100,11 +106,19 @@ public without sharing class HookDispatchJob implements Queueable, Database.Allo
     );
   }
 
+  // A lock error on the claim must not roll back the sent results. The
+  // rows stay due, and the next job or the sweep claims them.
   private static Boolean claimAndChain(String current) {
     if (!HookAsync.canEnqueue()) {
       return false;
     }
-    String next = HookQueueChannel.claim(current, HookConfig.batchSize());
-    return next != null && HookAsync.enqueue(new HookDispatchJob(next), 0);
+    try {
+      String next = HookQueueChannel.claim(current, HookConfig.batchSize());
+      return next != null && HookAsync.enqueue(new HookDispatchJob(next), 0);
+    } catch (QueryException e) {
+      return false;
+    } catch (DmlException e) {
+      return false;
+    }
   }
 }

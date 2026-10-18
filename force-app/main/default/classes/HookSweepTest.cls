@@ -14,7 +14,8 @@ private class HookSweepTest {
       Body__c = '{}',
       Status__c = status,
       Attempts__c = 0,
-      Received_At__c = Datetime.now().addMinutes(-ageMinutes)
+      Received_At__c = Datetime.now().addMinutes(-ageMinutes),
+      Dispatched_At__c = Datetime.now().addMinutes(-ageMinutes)
     );
     insert rec;
     return rec;
@@ -46,6 +47,7 @@ private class HookSweepTest {
     Hook_Inbound_Event__c fresh = inbound('Pending', 0);
     Hook_Inbound_Event__c due = inbound('Retrying', 1);
     due.Next_Attempt_At__c = Datetime.now().addMinutes(-1);
+    due.Dispatched_At__c = Datetime.now().addMinutes(-30);
     Hook_Inbound_Event__c later = inbound('Retrying', 2);
     later.Next_Attempt_At__c = Datetime.now().addMinutes(30);
     update new List<Hook_Inbound_Event__c>{ due, later };
@@ -141,6 +143,85 @@ private class HookSweepTest {
         FROM CronTrigger
         WHERE CronJobDetail.Name = 'Hook Sweep test'
       ]
+    );
+  }
+
+  @IsTest
+  static void aFailedPublishIsPublishedAgainWithNoAttempt() {
+    HookTestSupport.settings();
+    HookTestSupport.endpoint('e', 'NONE');
+    Hook_Inbound_Event__c rec = inbound('Pending', 0);
+    rec.Dispatched_At__c = null;
+    update rec;
+    Test.startTest();
+    HookSweep.run();
+    Test.stopTest();
+    Hook_Inbound_Event__c after = [
+      SELECT Status__c, Attempts__c
+      FROM Hook_Inbound_Event__c
+    ];
+    Assert.areEqual('Processed', after.Status__c);
+    Assert.areEqual(1, after.Attempts__c, 'only the handler attempt counts');
+  }
+
+  @IsTest
+  static void aLostRetryCountsAnAttempt() {
+    HookTestSupport.settings().Max_Attempts__c = 3;
+    HookTestSupport.endpoint('e', 'NONE');
+    Hook_Inbound_Event__c rec = inbound('Retrying', 30);
+    rec.Attempts__c = 2;
+    rec.Next_Attempt_At__c = Datetime.now().addMinutes(-40);
+    update rec;
+    HookSweep.run();
+    Hook_Inbound_Event__c after = [
+      SELECT Status__c, Attempts__c
+      FROM Hook_Inbound_Event__c
+    ];
+    Assert.areEqual(
+      'Failed',
+      after.Status__c,
+      'the dispatch after the due time had no result'
+    );
+    Assert.areEqual(3, after.Attempts__c);
+  }
+
+  @IsTest
+  static void theSweepClaimsAnExpiredLease() {
+    HookTestSupport.settings();
+    Hook_Subscription__c sub = HookTestSupport.subscription('s', '*');
+    Hook_Delivery__c d = HookTestSupport.delivery(sub, 'In_Flight');
+    d.Claim_Token__c = 'dead';
+    d.Lease_Until__c = Datetime.now().addMinutes(-1);
+    update d;
+    Test.startTest();
+    HookSweep.run();
+    Assert.areEqual(1, HookAsync.deferred.size());
+    ((HookDispatchJob) HookAsync.deferred[0]).execute(null);
+    Assert.areNotEqual('dead', HookTestSupport.reload(d.Id).Claim_Token__c);
+    Test.stopTest();
+  }
+
+  @IsTest
+  static void theScheduleRunsAtMinutes0And15And30And45() {
+    Test.startTest();
+    Hook.scheduleSweep();
+    Set<String> crons = new Set<String>();
+    for (CronTrigger ct : [
+      SELECT CronExpression
+      FROM CronTrigger
+      WHERE CronJobDetail.Name LIKE 'Hook Sweep%'
+    ]) {
+      crons.add(ct.CronExpression);
+    }
+    Test.stopTest();
+    Assert.areEqual(
+      new Set<String>{
+        '0 0 * * * ?',
+        '0 15 * * * ?',
+        '0 30 * * * ?',
+        '0 45 * * * ?'
+      },
+      crons
     );
   }
 }

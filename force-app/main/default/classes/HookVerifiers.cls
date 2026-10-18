@@ -66,6 +66,24 @@ public inherited sharing class HookVerifiers {
     }
   }
 
+  /**
+   * @description Tells if the event Id of a verifier is in the signed data.
+   * GitHub, Shopify, HMAC_SHA256, TOKEN and NONE take the Id from an unsigned
+   * header. Hook trusts the Id of a custom verifier.
+   * @param verifier The verifier.
+   * @return True when the Id is signed.
+   */
+  public static Boolean signsEventId(HookVerifier verifier) {
+    if (
+      verifier instanceof StandardWebhooks ||
+      verifier instanceof Stripe ||
+      verifier instanceof Slack
+    ) {
+      return true;
+    }
+    return !(verifier instanceof Signed || verifier instanceof NoCheck);
+  }
+
   private static String hexMac(String secret, Blob data) {
     return EncodingUtil.convertToHex(
       HookSigner.hmac(Blob.valueOf(secret), data)
@@ -84,7 +102,7 @@ public inherited sharing class HookVerifiers {
 
   // Gives the reason when the timestamp is bad or too old, else null.
   private static String timestampProblem(String raw, Integer tolerance) {
-    if (String.isBlank(raw) || !raw.trim().isNumeric()) {
+    if (String.isBlank(raw) || !Pattern.matches('[0-9]{1,12}', raw.trim())) {
       return 'The timestamp is missing or not a number.';
     }
     Long ts = Long.valueOf(raw.trim());

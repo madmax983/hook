@@ -6,7 +6,7 @@ Status: accepted. Date: 2026-10-18.
 
 Apex REST makes an endpoint easy. A webhook needs more than an endpoint.
 
-- **Inbound:** A provider (Stripe, GitHub, Slack, Shopify) calls Salesforce with no Salesforce session. The request comes through a Site guest user. The code must verify a signature over the raw body, stop replays, ignore duplicates, and send a 2xx in a few seconds. The work must run later, as a trusted user, with retries.
+- **Inbound:** A provider (Stripe, GitHub, Slack, Shopify) calls Salesforce with no Salesforce session. The request comes through a Site guest user. The code must verify a signature over the raw body, stop replays, ignore duplicates, and send a 2xx before the provider timeout ends. The work must run later, as a trusted user, with retries.
 - **Outbound:** Salesforce sends an event to a subscriber. Apex blocks a callout after DML and in a trigger. The code must sign the request, retry with backoff, keep a log, stop calls to a dead endpoint, and let an operator send again.
 
 Hook is a general library for both. An optional adapter runs a delivery or an inbound event as a durable Revenant workflow.
@@ -78,11 +78,11 @@ Ideas, then the selection.
 
 **Red (feelings).**
 - Admins fear webhooks because the guest user setup is unclear. The setup guide must be short and exact.
-- Developers want "it just works" defaults. The defaults must be safe.
+- Developers want safe defaults that need no change.
 
 **Black (risks).**
 - We cannot run Apex tests without an org in this session. Mitigation: apex-ls compile, shared test vectors checked by Node, Code Analyzer, and an org test workflow in CI.
-- Form-encoded inbound bodies cannot be verified byte for byte. Mitigation: document the limit. JSON providers work.
+- Hook cannot verify a form-encoded body byte for byte. Mitigation: document the limit. JSON providers work.
 - Platform event allocations are finite. Mitigation: one event for each inbound request, and a sweep fallback.
 - Many concurrent dispatch chains under high volume. Mitigation: each chain ends when no row is due.
 
@@ -137,7 +137,8 @@ stateDiagram-v2
   Retrying --> Processed
   Retrying --> Retrying
   Retrying --> Failed: no attempts left
-  Pending --> Failed: no handler class
+  Pending --> Failed: no handler class, or lost dispatches
+  Retrying --> Failed: lost dispatches
   Failed --> Pending: replay
   Processed --> Pending: replay
 ```
@@ -153,6 +154,8 @@ stateDiagram-v2
   Retrying --> In_Flight: due, claim
   In_Flight --> Failed: no attempts left, HTTP 410, no secret
   In_Flight --> In_Flight: lease expired, reclaim
+  In_Flight --> Retrying: job stopped, finalizer
+  In_Flight --> Pending: subscription not active
   Failed --> Pending: redeliver
   Delivered --> Pending: redeliver
 ```
@@ -182,11 +185,11 @@ stateDiagram-v2
 - **AC-OUT-2** The body is `{"id","type","timestamp","data"}`. Headers are `webhook-id`, `webhook-timestamp`, `webhook-signature` (`v1,<base64>`), `Content-Type: application/json`.
 - **AC-OUT-3** `Hook.send` with the same event Id twice makes one delivery for each subscription.
 - **AC-OUT-4** A 2xx sets `Delivered`. Each attempt records the status code, the error, and up to 2000 characters of the response.
-- **AC-OUT-5** The dispatcher claims rows with `FOR UPDATE`, a claim token, and a lease. An expired lease can be claimed again.
+- **AC-OUT-5** The dispatcher claims rows with `FOR UPDATE`, a claim token, and a lease. A dispatcher can claim a row again after its lease ends.
 - **AC-OUT-6** A non-2xx, a timeout, or a `CalloutException` sets `Retrying`. The next time uses exponential backoff with jitter and a cap. HTTP 429 and 503 use `Retry-After` when present.
 - **AC-OUT-7** After the maximum attempts (subscription value, else the org default 10) the row goes to `Failed`.
-- **AC-OUT-8** HTTP 410 sets `Failed` and disables the subscription.
-- **AC-OUT-9** After `Disable_After_Failures__c` failed attempts in a row, the subscription is disabled. A 2xx sets the count to 0. The dispatcher does not claim rows of an inactive subscription.
+- **AC-OUT-8** HTTP 410 sets `Failed`, and Hook disables the subscription.
+- **AC-OUT-9** After `Disable_After_Failures__c` failed attempts in a row, Hook disables the subscription. A 2xx sets the count to 0. The dispatcher does not claim rows of an inactive subscription.
 - **AC-OUT-10** One job sends at most `Batch_Size__c` rows (default 10) with `Timeout_Ms__c` (default 10,000). It chains a new job when more rows are due.
 - **AC-OUT-11** `Hook.redeliver(ids)` sets `Pending`, resets the attempts, and dispatches again.
 - **AC-OUT-12** The Flow action "Send Webhook" calls `Hook.send`. The Flow action "Replay Webhook" calls redeliver or replay by record type.
@@ -221,7 +224,7 @@ stateDiagram-v2
 - **AC-Q-2** apex-ls compiles all package folders with 0 issues.
 - **AC-Q-3** Prettier and Code Analyzer (severity 2) pass.
 - **AC-Q-4** The `global` surface is equal to `docs/api.md`. A Node test checks it.
-- **AC-Q-5** Test vectors are checked by `node:crypto` and by Apex.
+- **AC-Q-5** A Node test and the Apex tests check the test vectors.
 - **AC-Q-6** Docs: README (quick start, Site setup), API, ADRs. Text follows ASD-STE100.
 
 ## 7. Test Plan
@@ -240,3 +243,20 @@ stateDiagram-v2
 - [ADR 0002](../adr/0002-outbox-claim-lease.md): Outbound outbox with claim token and lease.
 - [ADR 0003](../adr/0003-secrets-in-protected-custom-setting.md): Secrets in a protected Custom Setting.
 - [ADR 0004](../adr/0004-revenant-adapter-package.md): Revenant adapter as a separate package folder.
+
+## 9. Review Changes
+
+A review by five agents (security, Apex runtime, durability, Revenant, docs) added these rules:
+
+- The dedup key uses only signed data (AC-IN-6).
+- A guest cannot use `NONE`. A 401 gives no reason. Hook does not store the token header (AC-SEC-5, AC-SEC-7).
+- `setSecret` revokes the previous value (AC-SEC-3).
+- A result write checks the claim token and the generation. It does not enable a disabled subscription (AC-OUT-5, AC-OUT-9).
+- An inactive subscription pauses its rows (AC-OUT-9).
+- Delayed jobs cover short retries in both directions (AC-OUT-6, AC-IN-9).
+- A lost inbound dispatch counts as an attempt (AC-IN-9).
+
+New criterion:
+
+- **AC-SEC-7** A guest request to an endpoint with the scheme `NONE` returns 401.
+

@@ -177,4 +177,46 @@ private class HookRevenantDeliveryTest {
     Assert.areEqual('Delivered', after.Status__c);
     Assert.areEqual(2, after.Attempts__c);
   }
+
+  @IsTest
+  static void a503WithRetryAfterSleeps() {
+    StepContext ctx = context(1);
+    StepResult result = run(
+      ctx,
+      new HookTestSupport.MockHttp()
+        .add(503, '', new Map<String, String>{ 'Retry-After' => '45' })
+    );
+    Assert.areEqual(StepResult.ActionType.SLEEP, result.directive().action);
+    Assert.areEqual(45, result.directive().sleepDurationSeconds);
+  }
+
+  @IsTest
+  static void aMissingSecretFails() {
+    StepContext ctx = context(1);
+    update new Hook_Subscription__c(
+      Id = row.Subscription__c,
+      Secret_Name__c = 'not_set'
+    );
+    StepResult result = run(
+      ctx,
+      new HookTestSupport.MockHttp().add(200, '', null)
+    );
+    Assert.areEqual(StepResult.ActionType.FAIL, result.directive().action);
+    Assert.areEqual(0, HookTestSupport.requests.size());
+  }
+
+  @IsTest
+  static void anInactiveSubscriptionFailsAndTheRowWaits() {
+    StepContext ctx = context(1);
+    update new Hook_Subscription__c(
+      Id = row.Subscription__c,
+      Active__c = false
+    );
+    StepResult result = run(
+      ctx,
+      new HookTestSupport.MockHttp().add(200, '', null)
+    );
+    Assert.areEqual(StepResult.ActionType.FAIL, result.directive().action);
+    Assert.areEqual('Pending', HookTestSupport.reload(row.Id).Status__c);
+  }
 }
