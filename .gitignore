@@ -37,3 +37,12 @@ sfca_results.json
 
 # Local environment variables
 .env
+
+# Node
+node_modules/
+
+# apex-ls download
+scripts/apex-ls/.apex-ls/
+
+# Code Analyzer output
+code-analyzer-results/
