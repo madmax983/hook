@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Endpoint__c</fullName>
+    <label>Endpoint</label>
+    <description>The Hook_Endpoint__mdt name.</description>
+    <inlineHelpText>The Hook_Endpoint__mdt name.</inlineHelpText>
+    <type>Text</type>
+    <length>40</length>
+    <required>false</required>
+    <unique>false</unique>
+    <externalId>false</externalId>
+</CustomField>

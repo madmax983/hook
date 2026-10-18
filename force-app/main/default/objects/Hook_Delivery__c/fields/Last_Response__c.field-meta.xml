@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Last_Response__c</fullName>
+    <label>Last Response</label>
+    <description>The first 2000 characters of the last response body.</description>
+    <inlineHelpText>The first 2000 characters of the last response body.</inlineHelpText>
+    <type>LongTextArea</type>
+    <length>32768</length>
+    <visibleLines>5</visibleLines>
+</CustomField>

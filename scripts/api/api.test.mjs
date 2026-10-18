@@ -22,6 +22,7 @@ test("the parser reads types, methods, properties, fields and interfaces", () =>
       global static final Integer MAX = 5;
       // global void commented();
       global class Inner { global List<Id> ids() { return null; } }
+      global Inner make() { return null; }
       private class Hidden { global void no() {} }
     }
     global interface I { void handle(A a); }
@@ -36,6 +37,7 @@ test("the parser reads types, methods, properties, fields and interfaces", () =>
     "static final A.MAX: Integer",
     "global class A.Inner",
     "A.Inner.ids(): List<Id>",
+    "A.make(): A.Inner",
     "global interface I",
     "I.handle(A): void",
   ]);

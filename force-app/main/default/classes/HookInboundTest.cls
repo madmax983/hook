@@ -36,7 +36,7 @@ private class HookInboundTest {
     );
   }
 
-  private static Map<String, Object> json(HookResponse res) {
+  private static Map<String, Object> parsed(HookResponse res) {
     return (Map<String, Object>) JSON.deserializeUntyped(res.body);
   }
 
@@ -52,7 +52,7 @@ private class HookInboundTest {
     Test.stopTest();
 
     Assert.areEqual(200, res.statusCode, res.body);
-    Assert.areEqual('accepted', json(res).get('status'));
+    Assert.areEqual('accepted', parsed(res).get('status'));
     Hook_Inbound_Event__c rec = [
       SELECT
         Endpoint__c,
@@ -100,7 +100,7 @@ private class HookInboundTest {
     );
     Test.stopTest();
     Assert.areEqual(200, second.statusCode);
-    Assert.areEqual('duplicate', json(second).get('status'));
+    Assert.areEqual('duplicate', parsed(second).get('status'));
     Assert.areEqual(1, [SELECT COUNT() FROM Hook_Inbound_Event__c]);
   }
 
@@ -182,8 +182,8 @@ private class HookInboundTest {
     ep.Event_Id_Header__c = null;
     HookResponse first = post('gh', '{"b":2}', new Map<String, String>());
     HookResponse again = post('gh', '{"b":2}', new Map<String, String>());
-    Assert.areEqual('accepted', json(first).get('status'));
-    Assert.areEqual('duplicate', json(again).get('status'));
+    Assert.areEqual('accepted', parsed(first).get('status'));
+    Assert.areEqual('duplicate', parsed(again).get('status'));
     Assert.areEqual(
       EncodingUtil.convertToHex(
         Crypto.generateDigest('SHA-256', Blob.valueOf('{"b":2}'))

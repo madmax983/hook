@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ValidationRule xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Endpoint_Must_Be_Secure</fullName>
+    <active>true</active>
+    <description>The endpoint must start with https:// or callout: (AC-SEC-4).</description>
+    <errorConditionFormula>NOT(OR(BEGINS(Endpoint__c, "https://"), BEGINS(Endpoint__c, "callout:")))</errorConditionFormula>
+    <errorDisplayField>Endpoint__c</errorDisplayField>
+    <errorMessage>Use an https:// URL or a callout: Named Credential.</errorMessage>
+</ValidationRule>

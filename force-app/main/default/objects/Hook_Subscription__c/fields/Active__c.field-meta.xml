@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Active__c</fullName>
+    <label>Active</label>
+    <description>When false, Hook makes no new delivery and sends no delivery.</description>
+    <inlineHelpText>When false, Hook makes no new delivery and sends no delivery.</inlineHelpText>
+    <type>Checkbox</type>
+    <defaultValue>true</defaultValue>
+</CustomField>

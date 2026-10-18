@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Verifier_Class__c</fullName>
+    <label>Verifier Class</label>
+    <description>A HookVerifier class. It replaces the scheme.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <type>Text</type>
+    <length>255</length>
+    <required>false</required>
+</CustomField>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Base_Delay_Seconds__c</fullName>
+    <label>Base Delay Seconds</label>
+    <description>First retry delay. It doubles each attempt. Default 60.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <type>Number</type>
+    <precision>6</precision>
+    <scale>0</scale>
+    <required>false</required>
+</CustomField>

@@ -92,9 +92,11 @@ private class HookSecretsTest {
   static void configCapsTheBatchAndTheTimeout() {
     Hook_Setting__mdt s = HookTestSupport.settings();
     s.Batch_Size__c = 500;
-    s.Timeout_Ms__c = 999999;
+    s.Timeout_Ms__c = 1000;
     Assert.areEqual(100, HookConfig.batchSize());
+    s.Timeout_Ms__c = 999999;
     Assert.areEqual(120000, HookConfig.timeoutMs());
+    Assert.areEqual(1, HookConfig.batchSize());
     s.Batch_Size__c = 20;
     s.Timeout_Ms__c = 10000;
     Assert.areEqual(

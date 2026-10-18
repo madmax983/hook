@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Dedup_Key__c</fullName>
+    <label>Dedup Key</label>
+    <description>Subscription Id and event Id. It stops a second delivery of the same event.</description>
+    <inlineHelpText>Subscription Id and event Id. It stops a second delivery of the same event.</inlineHelpText>
+    <type>Text</type>
+    <length>255</length>
+    <required>true</required>
+    <unique>true</unique>
+    <caseSensitive>true</caseSensitive>
+    <externalId>true</externalId>
+</CustomField>

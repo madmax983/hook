@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Handler_Config__c</fullName>
+    <label>Handler Config</label>
+    <description>JSON for the handler.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <type>LongTextArea</type>
+    <length>32768</length>
+    <visibleLines>5</visibleLines>
+</CustomField>

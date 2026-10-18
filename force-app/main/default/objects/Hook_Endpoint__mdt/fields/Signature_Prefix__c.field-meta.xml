@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Signature_Prefix__c</fullName>
+    <label>Signature Prefix</label>
+    <description>HMAC_SHA256 and TOKEN: text before the value, for example sha256= or Bearer.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <type>Text</type>
+    <length>40</length>
+    <required>false</required>
+</CustomField>

@@ -188,7 +188,23 @@ export function surfaceOf(src) {
       buf += c;
     }
   }
-  return lines;
+  return qualify(lines);
+}
+
+// Writes an inner type in a signature with its outer type, as callers see it.
+function qualify(lines) {
+  const inner = new Map();
+  for (const line of lines) {
+    const m = line.match(/global (?:class|interface|enum) ([\w.]+)/);
+    if (m && m[1].includes(".")) inner.set(m[1].split(".").pop(), m[1]);
+  }
+  if (!inner.size) return lines;
+  const names = new RegExp(`(?<![.\\w])(${[...inner.keys()].join("|")})\\b`, "g");
+  return lines.map((line) => {
+    const at = line.search(/[(:]/);
+    if (at < 0 || /^(@\w+ )*global /.test(line)) return line;
+    return line.slice(0, at) + line.slice(at).replace(names, (n) => inner.get(n));
+  });
 }
 
 function walk(dir) {

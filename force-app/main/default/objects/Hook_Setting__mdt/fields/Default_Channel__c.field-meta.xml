@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Default_Channel__c</fullName>
+    <label>Default Channel</label>
+    <description>The HookChannel class for a subscription with no channel. Blank is HookQueueChannel.</description>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <type>Text</type>
+    <length>255</length>
+    <required>false</required>
+</CustomField>
